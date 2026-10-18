@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { UsageDashboard } from "@/components/usage/UsageDashboard";
 import { useSettings } from "@/hooks/useSettings";
@@ -10,11 +11,26 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useTheme } from "@/components/theme-provider";
+import { syncLanguageFromSettings } from "@/i18n";
+import { WindowControlsContext } from "@/components/shell/AppPageHeader";
+import { WindowControls } from "@/components/shell/WindowControls";
 
 export default function App() {
   const { i18n } = useTranslation();
   const { theme, setTheme } = useTheme();
   const { settings, autoSaveSettings } = useSettings();
+
+  useEffect(() => {
+    syncLanguageFromSettings(settings?.language);
+    const savedTheme = settings?.theme;
+    if (
+      savedTheme === "light" ||
+      savedTheme === "dark" ||
+      savedTheme === "system"
+    ) {
+      if (savedTheme !== theme) setTheme(savedTheme);
+    }
+  }, [settings?.language, settings?.theme, setTheme, theme]);
 
   const handleLanguageChange = (lang: string) => {
     i18n.changeLanguage(lang);
@@ -45,14 +61,8 @@ export default function App() {
           <DropdownMenuItem onClick={() => handleLanguageChange("zh")}>
             简体中文
           </DropdownMenuItem>
-          <DropdownMenuItem onClick={() => handleLanguageChange("zh-TW")}>
-            繁體中文
-          </DropdownMenuItem>
           <DropdownMenuItem onClick={() => handleLanguageChange("en")}>
             English
-          </DropdownMenuItem>
-          <DropdownMenuItem onClick={() => handleLanguageChange("ja")}>
-            日本語
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -75,7 +85,8 @@ export default function App() {
   );
 
   return (
-    <div className="flex h-screen w-screen flex-col bg-bg text-fg select-none overflow-hidden">
+    <WindowControlsContext.Provider value={<WindowControls />}>
+      <div className="flex h-screen w-screen flex-col bg-bg text-fg select-none overflow-hidden">
       {/* 主体用量仪表盘 */}
       <div className="flex-1 overflow-auto">
         <UsageDashboard
@@ -95,6 +106,7 @@ export default function App() {
           headerExtraActions={extraActions}
         />
       </div>
-    </div>
+      </div>
+    </WindowControlsContext.Provider>
   );
 }

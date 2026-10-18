@@ -162,17 +162,16 @@ fn speed_eligible_sql(alias: &str) -> String {
     )
 }
 
-/// 估算速度的输出门槛：估算的耗时含首字等待，输出越少首字占比越大、算出来越偏低，
-/// 所以比精确口径的门槛高。实测 200–300 token 的请求比长请求低约四分之一，
-/// 100–200 的低约四成；而 Codex 的请求只有四分之一超过 500，门槛再高大半行都是空的。
-pub const SPEED_ESTIMATE_MIN_OUTPUT_TOKENS: i64 = 200;
+/// Session-log speed has no output-count threshold: any positive output and
+/// positive estimated duration contributes, including short responses. The estimate
+/// includes first-token wait time, so it is intentionally lower than routed speed.
+pub const SPEED_ESTIMATE_MIN_OUTPUT_TOKENS: i64 = 1;
 
-/// 估算耗时短于这个毫秒数时不估速度：输出 200 token 以上却不到 1 秒，多半是起点取晚了。
-pub const SPEED_ESTIMATE_MIN_DURATION_MS: i64 = 1000;
+/// Estimated duration only needs to be positive so every timed session log is counted.
+pub const SPEED_ESTIMATE_MIN_DURATION_MS: i64 = 1;
 
-/// 明细行能不能估速度的 SQL 条件（和前端 `isSpeedEstimateEligible` 同口径）：
-/// 会话日志导入的行，耗时是导入时按日志时间戳估的。估算速度仍按整段耗时算（含首字
-/// 等待），不减推出来的首字：只有部分请求推得出首字，减了会让同一行里两种算法混在一起。
+/// Session-log estimates use every row with positive output and positive duration.
+/// The estimate includes first-token wait time and therefore uses the full duration.
 fn speed_estimate_eligible_sql(alias: &str) -> String {
     let data_source = data_source_expr(alias);
     format!(
@@ -388,6 +387,7 @@ fn provider_name_coalesce(log_alias: &str, provider_alias: &str) -> String {
          WHEN '_grok_session' THEN 'Grok Build (Session)' \
          WHEN '_mcode_session' THEN 'MiniMax Code (Session)' \
          WHEN '_pi_session' THEN 'Pi (Session)' \
+         WHEN '_dsh_session' THEN 'DeepSeek Shell (Session)' \
          ELSE {log_alias}.provider_id END)"
     )
 }
@@ -481,7 +481,7 @@ pub(crate) fn effective_usage_log_filter(log_alias: &str) -> String {
         dedup_app_type_match_sql("proxy_dedup.app_type", &format!("{log_alias}.app_type"));
     format!(
         "NOT (
-            {data_source} IN ('session_log', 'codex_session', 'gemini_session', 'opencode_session')
+            {data_source} IN ('session_log', 'codex_session', 'gemini_session', 'opencode_session', 'dsh_session')
             AND EXISTS (
                 SELECT 1
                 FROM proxy_request_logs proxy_dedup
@@ -496,7 +496,7 @@ pub(crate) fn effective_usage_log_filter(log_alias: &str) -> String {
                       proxy_dedup.cache_creation_tokens = {log_alias}.cache_creation_tokens
                       OR (
                           {log_alias}.cache_creation_tokens = 0
-                          AND {data_source} IN ('codex_session', 'gemini_session', 'opencode_session')
+                          AND {data_source} IN ('codex_session', 'gemini_session', 'opencode_session', 'dsh_session')
                       )
                       OR (
                           proxy_dedup.cache_creation_tokens = 0
@@ -519,7 +519,7 @@ pub(crate) fn effective_usage_log_filter(log_alias: &str) -> String {
 
 /// 参与跨源去重的会话日志来源（和 [`effective_usage_log_filter`] 同口径）。
 const DEDUP_SESSION_SOURCES_SQL: &str =
-    "'session_log', 'codex_session', 'gemini_session', 'opencode_session'";
+    "'session_log', 'codex_session', 'gemini_session', 'opencode_session', 'dsh_session'";
 
 /// Dashboard 读路径用的去重条件：语义和 [`effective_usage_log_filter`] 完全一致，
 /// 只是先看时间窗口里两类日志各有多少，再挑便宜的写法。
@@ -587,7 +587,7 @@ pub(crate) fn effective_usage_log_filter_for_range(
                  dedup_p.cache_creation_tokens = dedup_s.cache_creation_tokens
                  OR (
                      dedup_s.cache_creation_tokens = 0
-                     AND {ds_source} IN ('codex_session', 'gemini_session', 'opencode_session')
+                     AND {ds_source} IN ('codex_session', 'gemini_session', 'opencode_session', 'dsh_session')
                  )
                  OR (
                      dedup_p.cache_creation_tokens = 0
@@ -747,7 +747,8 @@ pub(crate) fn has_matching_proxy_usage_log(
     key: &DedupKey,
 ) -> Result<bool, AppError> {
     let allow_missing_cache_creation =
-        matches!(key.app_type, "codex" | "gemini" | "opencode") && key.cache_creation_tokens == 0;
+        matches!(key.app_type, "codex" | "gemini" | "opencode" | "dsh")
+            && key.cache_creation_tokens == 0;
     let allow_legacy_proxy_cache_creation = key.app_type == "codex";
 
     conn.prepare_cached(&MATCHING_PROXY_USAGE_LOG_SQL)
@@ -5354,8 +5355,8 @@ mod tests {
 
         let stats = db.get_provider_stats(None, None, None, None, None)?;
         assert_eq!(stats.len(), 1);
-        assert_eq!(stats[0].est_speed_output_tokens, 2_200);
-        assert_eq!(stats[0].est_speed_duration_ms, 25_000);
+        assert_eq!(stats[0].est_speed_output_tokens, 3_199);
+        assert_eq!(stats[0].est_speed_duration_ms, 30_900);
         // 估算的不混进精确口径
         assert_eq!(stats[0].speed_output_tokens, 0);
         assert_eq!(stats[0].speed_generation_ms, 0);

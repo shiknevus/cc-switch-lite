@@ -453,7 +453,7 @@ pub(crate) fn reset_dsh_usage_on_conn(conn: &rusqlite::Connection) -> Result<(),
     ).map_err(|e| AppError::Database(format!("重置 dsh 用量失败: {e}")))?;
 
     conn.execute(
-        "DELETE FROM session_sync_state WHERE file_path LIKE '%.dsh%'",
+        "DELETE FROM session_log_sync WHERE file_path LIKE '%.dsh%'",
         [],
     ).map_err(|e| AppError::Database(format!("清理 dsh 同步状态失败: {e}")))?;
 

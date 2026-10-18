@@ -245,14 +245,13 @@ export function getOutputTokensPerSecond(
   return Number.isFinite(tps) && tps > 0 ? tps : null;
 }
 
-/**
- * 估算速度的输出门槛。会话日志导入的请求没有首字计时，耗时是按日志时间戳估的、
- * 含首字等待；输出越少首字占比越大、算出来越偏低，所以门槛比精确口径高。
+/** Session-log speed has no output-count threshold; any positive output with a
+ * measurable duration contributes, including short responses.
  */
-export const SPEED_ESTIMATE_MIN_OUTPUT_TOKENS = 200;
+export const SPEED_ESTIMATE_MIN_OUTPUT_TOKENS = 1;
 
-/** 估算耗时短于此值时不估速度：输出 200 token 以上却不到 1 秒，多半是起点取晚了。 */
-export const SPEED_ESTIMATE_MIN_DURATION_MS = 1000;
+/** Session-log estimates only require a positive duration. */
+export const SPEED_ESTIMATE_MIN_DURATION_MS = 1;
 
 /** 这条请求是不是从会话日志导入的（不是路由服务记的）。 */
 export function isSessionLogRequest(log: { dataSource?: unknown }): boolean {
@@ -263,9 +262,8 @@ export function isSessionLogRequest(log: { dataSource?: unknown }): boolean {
   );
 }
 
-/**
- * 这条请求能不能估速度（和后端 `speed_estimate_eligible_sql` 同口径）：会话日志导入、
- * 输出不少于 200 token、估算耗时不短于 1 秒。推出了首字的也照样按整段耗时算。
+/** Session-log estimates use every row with positive output and positive duration.
+ * The estimate includes first-token wait time and therefore uses the full duration.
  */
 export function isSpeedEstimateEligible(
   log: OutputTokensPerSecondInput,

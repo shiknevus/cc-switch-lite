@@ -14,7 +14,7 @@
       {
         "label": "main",
         "title": "CC Switch Lite",
-        "titleBarStyle": "Overlay",
+        "decorations": false,
         "trafficLightPosition": { "x": 14, "y": 16 },
         "width": 1100,
         "height": 720,
