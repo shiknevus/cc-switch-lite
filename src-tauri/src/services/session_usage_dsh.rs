@@ -445,6 +445,7 @@ fn insert_dsh_session_entry(
     Ok(true)
 }
 
+#[allow(dead_code)]
 pub(crate) fn reset_dsh_usage_on_conn(conn: &rusqlite::Connection) -> Result<(), AppError> {
     conn.execute(
         "DELETE FROM proxy_request_logs WHERE data_source = 'dsh_session' OR provider_id = '_dsh_session' OR app_type = 'dsh'",
@@ -460,6 +461,7 @@ pub(crate) fn reset_dsh_usage_on_conn(conn: &rusqlite::Connection) -> Result<(),
 }
 
 impl Database {
+    #[allow(dead_code)]
     pub(crate) fn reset_dsh_usage(&self) -> Result<(), AppError> {
         let conn = lock_conn!(self.conn);
         conn.execute("SAVEPOINT reset_dsh_usage", [])
