@@ -254,7 +254,7 @@ export function RequestLogTable({
     const providerLabel = getUsageProviderLabel(log.providerName, t);
     const provider = providerLabel.shortLabel;
     const exactTps = formatOutputTokensPerSecond(log);
-    // 会话日志导入的请求没有首字计时，速度是按日志时间戳估的，前面带 ≈
+    // 会话日志导入的请求速度和首字时间都是估算值，前面带 ≈
     const estimatedTps =
       exactTps == null ? formatEstimatedTokensPerSecond(log) : null;
     const tps = exactTps ?? estimatedTps;

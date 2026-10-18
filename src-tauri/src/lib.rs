@@ -34,8 +34,19 @@ pub fn run() {
             let db = Arc::new(Database::init().expect("数据库初始化失败"));
             app.manage(AppState::new(db.clone()));
 
+            // The window is hidden in tauri.conf.json so database setup and the
+            // first session scan do not expose a blank white frame. Show it as
+            // soon as the command state is ready; the scans below start after
+            // the first paint.
+            if let Some(main_window) = app.get_webview_window("main") {
+                let _ = main_window.set_decorations(false);
+                let _ = main_window.show();
+                let _ = main_window.set_focus();
+            }
+
             let sync_db = db.clone();
             tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(750)).await;
                 let _guard = services::session_usage::session_sync_mutex().lock().await;
                 let _ = tauri::async_runtime::spawn_blocking(move || {
                     services::session_usage::sync_all_unlocked(&sync_db)
@@ -65,14 +76,6 @@ pub fn run() {
                     }
                 }
             });
-
-            if let Some(main_window) = app.get_webview_window("main") {
-                // Enforce the borderless window before first paint; window-state restoration
-                // can otherwise bring back the native light title bar.
-                let _ = main_window.set_decorations(false);
-                let _ = main_window.show();
-                let _ = main_window.set_focus();
-            }
 
             Ok(())
         })

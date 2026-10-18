@@ -2151,7 +2151,19 @@ impl Database {
 
     pub(crate) fn ensure_model_pricing_seeded_on_conn(conn: &Connection) -> Result<(), AppError> {
         // 每次启动都执行 INSERT OR IGNORE，增量追加新模型；仅修复仍等于旧内置值的定价。
-        Self::seed_model_pricing(conn)?;
-        Self::repair_current_model_pricing(conn)
+        // Keep the full seed and repair pass in one transaction. Without this,
+        // every INSERT/UPDATE becomes its own WAL commit during startup, which
+        // makes a large existing pricing table look like a several-second white
+        // screen before the main window can be shown.
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result =
+            Self::seed_model_pricing(conn).and_then(|_| Self::repair_current_model_pricing(conn));
+        match result {
+            Ok(()) => conn.execute_batch("COMMIT").map_err(AppError::from),
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
     }
 }

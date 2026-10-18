@@ -44,6 +44,7 @@ use crate::services::usage_stats::{
     find_model_pricing, has_recent_grokbuild_proxy_activity, SESSION_PROXY_DEDUP_WINDOW_SECONDS,
 };
 use rust_decimal::Decimal;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -61,6 +62,11 @@ use std::time::SystemTime;
 /// 才写。🔴 勿再与守卫的 ±`SESSION_PROXY_DEDUP_WINDOW_SECONDS` 绑成同一
 /// 常量——两者语义不同，绑定曾让官方态用量平白延迟 10 分钟以上。
 const SETTLE_WINDOW_SECONDS: i64 = 60;
+
+/// Existing Grok session rows were written before first-token timing was
+/// extracted from the stream events. Re-scan them once so the new value appears
+/// without requiring the session file to change again.
+const GROK_FIRST_TOKEN_BACKFILL_SETTING: &str = "grok_first_token_backfill_v1";
 
 // 沉降期间落库的代理行，时刻最多比事件晚一个沉降窗，必须仍落在守卫窗口内。
 const _: () = assert!(SETTLE_WINDOW_SECONDS < SESSION_PROXY_DEDUP_WINDOW_SECONDS);
@@ -95,6 +101,7 @@ impl GrokCounters {
 struct GrokUsageEvent {
     created_at: i64,
     prompt_id: String,
+    first_token_ms: Option<u64>,
     /// 事件级 `costIsPartial`（顶层 usage 上观测到的位置；对本事件全部模型生效）
     cost_is_partial: bool,
     per_model: Vec<(String, GrokCounters)>,
@@ -103,6 +110,7 @@ struct GrokUsageEvent {
 /// 同步 Grok Build 使用数据（从 updates.jsonl 会话日志）
 pub fn sync_grokbuild_usage(db: &Database) -> Result<SessionSyncResult, AppError> {
     let files = collect_grok_updates_files();
+    let force_timing_backfill = db.get_setting(GROK_FIRST_TOKEN_BACKFILL_SETTING)?.is_none();
 
     let mut result = SessionSyncResult {
         files_scanned: files.len() as u32,
@@ -112,7 +120,7 @@ pub fn sync_grokbuild_usage(db: &Database) -> Result<SessionSyncResult, AppError
     let cursors = crate::services::session_usage::load_sync_cursors(db)?;
 
     for file_path in &files {
-        match sync_single_grok_file(db, file_path, &cursors) {
+        match sync_single_grok_file_with_options(db, file_path, &cursors, force_timing_backfill) {
             Ok(file_result) => result.merge(file_result),
             Err(e) => {
                 let msg = format!("Grok Build 会话文件解析失败 {}: {e}", file_path.display());
@@ -120,6 +128,10 @@ pub fn sync_grokbuild_usage(db: &Database) -> Result<SessionSyncResult, AppError
                 result.errors.push(msg);
             }
         }
+    }
+
+    if force_timing_backfill && result.errors.is_empty() {
+        db.set_setting(GROK_FIRST_TOKEN_BACKFILL_SETTING, "1")?;
     }
 
     if result.imported > 0 {
@@ -184,11 +196,36 @@ fn collect_files_named(root: &Path, name: &str, files: &mut Vec<PathBuf>, depth:
     }
 }
 
+fn grok_file_has_missing_timing(db: &Database, file_path: &Path) -> Result<bool, AppError> {
+    let Some(session_id) = file_path
+        .parent()
+        .and_then(|dir| dir.file_name())
+        .and_then(|name| name.to_str())
+    else {
+        return Ok(false);
+    };
+    let conn = lock_conn!(db.conn);
+    conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM proxy_request_logs
+            WHERE data_source = 'grok_session'
+              AND session_id = ?1
+              AND latency_ms > 0
+              AND first_token_ms IS NULL
+        )",
+        rusqlite::params![session_id],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|value| value != 0)
+    .map_err(|e| AppError::Database(format!("查询 Grok 首字回填状态失败: {e}")))
+}
+
 /// 同步单个 updates.jsonl 文件。游标来自调用方批量预取。
-fn sync_single_grok_file(
+fn sync_single_grok_file_with_options(
     db: &Database,
     file_path: &Path,
     cursors: &std::collections::HashMap<String, crate::services::session_usage::SyncCursor>,
+    force_timing_backfill: bool,
 ) -> Result<SessionSyncResult, AppError> {
     let file_path_str = file_path.to_string_lossy().to_string();
 
@@ -207,7 +244,9 @@ fn sync_single_grok_file(
     }
 
     let last_modified = cursors.get(&file_path_str).map_or(0, |c| c.last_modified);
-    if file_modified <= last_modified {
+    if file_modified <= last_modified
+        && (!force_timing_backfill || !grok_file_has_missing_timing(db, file_path)?)
+    {
         return Ok(SessionSyncResult::default());
     }
 
@@ -284,6 +323,7 @@ fn sync_single_grok_file(
                 db,
                 &request_id,
                 turn,
+                event.first_token_ms,
                 event.cost_is_partial || turn.cost_partial,
                 model,
                 &session_id,
@@ -309,18 +349,73 @@ fn sync_single_grok_file(
     Ok(result)
 }
 
+fn sync_single_grok_file(
+    db: &Database,
+    file_path: &Path,
+    cursors: &std::collections::HashMap<String, crate::services::session_usage::SyncCursor>,
+) -> Result<SessionSyncResult, AppError> {
+    sync_single_grok_file_with_options(db, file_path, cursors, false)
+}
+
 /// 从 updates.jsonl 内容解析出全部逐轮用量事件（保持文件顺序）
 fn parse_grok_usage_events(content: &str) -> Vec<GrokUsageEvent> {
-    let mut events = Vec::new();
+    let records: Vec<serde_json::Value> = content
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            (!line.is_empty())
+                .then(|| serde_json::from_str::<serde_json::Value>(line).ok())
+                .flatten()
+        })
+        .collect();
 
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let Ok(record) = serde_json::from_str::<serde_json::Value>(line) else {
+    // Grok writes stream chunks with millisecond metadata while the outer
+    // event timestamp is only second precision. Use the first assistant chunk
+    // after the prompt's turn start as the first-token timestamp. This also
+    // covers thought output, which is the first model output users observe in
+    // a Grok Build session.
+    let mut turn_starts_ms: HashMap<String, i64> = HashMap::new();
+    let mut first_outputs_ms: HashMap<String, i64> = HashMap::new();
+    for record in &records {
+        let params = record.get("params");
+        let update = params.and_then(|p| p.get("update"));
+        let metadata = params.and_then(|p| p.get("_meta"));
+        let Some(prompt_id) = metadata
+            .and_then(|m| m.get("promptId"))
+            .and_then(|v| v.as_str())
+            .filter(|id| !id.is_empty())
+        else {
             continue;
         };
+        let Some(agent_timestamp_ms) = metadata
+            .and_then(|m| m.get("agentTimestampMs"))
+            .and_then(|v| v.as_i64())
+        else {
+            continue;
+        };
+        if let Some(turn_start_ms) = metadata
+            .and_then(|m| m.get("turnStartMs"))
+            .and_then(|v| v.as_i64())
+        {
+            turn_starts_ms
+                .entry(prompt_id.to_string())
+                .and_modify(|known| *known = (*known).min(turn_start_ms))
+                .or_insert(turn_start_ms);
+        }
+        let kind = update
+            .and_then(|u| u.get("sessionUpdate"))
+            .and_then(|v| v.as_str());
+        if matches!(kind, Some("agent_thought_chunk" | "agent_message_chunk")) {
+            first_outputs_ms
+                .entry(prompt_id.to_string())
+                .and_modify(|known| *known = (*known).min(agent_timestamp_ms))
+                .or_insert(agent_timestamp_ms);
+        }
+    }
+
+    let mut events = Vec::new();
+
+    for record in records {
         if record.get("method").and_then(|v| v.as_str()) != Some("_x.ai/session/update") {
             continue;
         }
@@ -369,9 +464,20 @@ fn parse_grok_usage_events(content: &str) -> Vec<GrokUsageEvent> {
         // 与日志在多次重扫间确定。
         per_model.sort_by(|a, b| a.0.cmp(&b.0));
 
+        let first_token_ms = turn_starts_ms
+            .get(&prompt_id)
+            .and_then(|start_ms| {
+                first_outputs_ms
+                    .get(&prompt_id)
+                    .map(|first_ms| first_ms - start_ms)
+            })
+            .and_then(|elapsed| u64::try_from(elapsed).ok())
+            .filter(|elapsed| *elapsed > 0);
+
         events.push(GrokUsageEvent {
             created_at,
             prompt_id,
+            first_token_ms,
             cost_is_partial: usage
                 .get("costIsPartial")
                 .and_then(|v| v.as_bool())
@@ -418,6 +524,7 @@ fn insert_grok_session_entry(
     db: &Database,
     request_id: &str,
     turn: &GrokCounters,
+    first_token_ms: Option<u64>,
     cost_is_partial: bool,
     model: &str,
     session_id: &str,
@@ -539,12 +646,14 @@ fn insert_grok_session_entry(
             cache_read_cost_usd = excluded.cache_read_cost_usd,
             cache_creation_cost_usd = excluded.cache_creation_cost_usd,
             total_cost_usd = excluded.total_cost_usd,
-            latency_ms = excluded.latency_ms
+            latency_ms = excluded.latency_ms,
+            first_token_ms = COALESCE(proxy_request_logs.first_token_ms, excluded.first_token_ms)
         WHERE data_source = 'grok_session'
           AND (input_tokens != excluded.input_tokens
            OR output_tokens != excluded.output_tokens
            OR cache_read_tokens != excluded.cache_read_tokens
            OR latency_ms != excluded.latency_ms
+           OR (first_token_ms IS NULL AND excluded.first_token_ms IS NOT NULL)
            OR model != excluded.model)",
         rusqlite::params![
             request_id,
@@ -562,7 +671,7 @@ fn insert_grok_session_entry(
             cache_creation_cost,
             total_cost,
             turn.api_ms.min(i64::MAX as u64) as i64, // latency_ms（本轮 API 时长）
-            Option::<i64>::None, // first_token_ms
+            first_token_ms.map(|value| value.min(i64::MAX as u64) as i64),
             200i64,              // status_code
             Option::<String>::None, // error_message
             session_id,
@@ -713,6 +822,37 @@ mod tests {
                 cost_partial: false,
             }
         );
+    }
+
+    #[test]
+    fn derives_and_persists_first_token_from_stream_metadata() -> Result<(), AppError> {
+        let content = concat!(
+            r#"{"timestamp":1700000000,"method":"session/update","params":{"update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"first"}},"_meta":{"promptId":"p1","agentTimestampMs":1700000100000,"turnStartMs":1700000099000}}}"#,
+            "\n",
+            r#"{"timestamp":1700000010,"method":"_x.ai/session/update","params":{"update":{"sessionUpdate":"turn_completed","prompt_id":"p1","usage":{"apiDurationMs":3000,"modelUsage":{"grok-4.5-build":{"inputTokens":10,"outputTokens":2,"apiDurationMs":3000}}}}}}"#,
+        );
+        let events = parse_grok_usage_events(content);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].first_token_ms, Some(1000));
+
+        let db = Database::memory()?;
+        let temp = tempdir().expect("tempdir");
+        let path = write_session_file(temp.path(), "sess-first-token", &[content.to_string()]);
+        let result = sync_single_grok_file(
+            &db,
+            &path,
+            &crate::services::session_usage::load_sync_cursors(&db).unwrap(),
+        )?;
+        assert_eq!(result.imported, 1);
+
+        let conn = lock_conn!(db.conn);
+        let stored: Option<i64> = conn.query_row(
+            "SELECT first_token_ms FROM proxy_request_logs WHERE data_source = 'grok_session'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(stored, Some(1000));
+        Ok(())
     }
 
     #[test]

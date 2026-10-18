@@ -234,9 +234,7 @@ export const KNOWN_APP_TYPES: ReadonlyArray<AppType> = [
   "codex",
   "gemini",
   "grokbuild",
-  "opencode",
   "pi",
-  "mcode",
   "dsh",
 ];
 
