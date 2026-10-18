@@ -33,12 +33,6 @@ export interface Settings {
   usageDisplay?: UsageDisplaySettings;
 }
 
-export interface UsageResult {
-  success: boolean;
-  message?: string;
-  data?: any;
-}
-
 export interface Provider {
   id: string;
   name: string;

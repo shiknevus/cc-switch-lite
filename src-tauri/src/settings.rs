@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::database::Database;
+use crate::database::{lock_conn, Database};
 use crate::error::AppError;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -110,33 +110,60 @@ pub fn get_settings_from_db(db: &Database) -> AppSettings {
 }
 
 pub fn save_settings_to_db(db: &Database, settings: &AppSettings) -> Result<(), AppError> {
-    db.set_setting("language", &settings.language)?;
-    db.set_setting("theme", &settings.theme)?;
-    db.set_setting(
-        "usage_dashboard_refresh_interval_ms",
-        &settings.usage_dashboard_refresh_interval_ms.to_string(),
+    let mut conn = lock_conn!(db.conn);
+    let tx = conn.transaction()?;
+    tx.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+        rusqlite::params!["language", &settings.language],
     )?;
-    db.set_setting(
-        "session_auto_sync_enabled",
-        if settings.session_auto_sync_enabled { "true" } else { "false" },
+    tx.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+        rusqlite::params!["theme", &settings.theme],
     )?;
-    db.set_setting(
-        "minimize_to_tray_on_close",
-        if settings.minimize_to_tray_on_close { "true" } else { "false" },
+    tx.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+        rusqlite::params![
+            "usage_dashboard_refresh_interval_ms",
+            settings.usage_dashboard_refresh_interval_ms.to_string()
+        ],
     )?;
-    db.set_setting(
-        "launch_on_startup",
-        if settings.launch_on_startup { "true" } else { "false" },
+    tx.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+        rusqlite::params![
+            "session_auto_sync_enabled",
+            if settings.session_auto_sync_enabled { "true" } else { "false" }
+        ],
     )?;
-    db.set_setting(
-        "silent_startup",
-        if settings.silent_startup { "true" } else { "false" },
+    tx.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+        rusqlite::params![
+            "minimize_to_tray_on_close",
+            if settings.minimize_to_tray_on_close { "true" } else { "false" }
+        ],
+    )?;
+    tx.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+        rusqlite::params![
+            "launch_on_startup",
+            if settings.launch_on_startup { "true" } else { "false" }
+        ],
+    )?;
+    tx.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+        rusqlite::params![
+            "silent_startup",
+            if settings.silent_startup { "true" } else { "false" }
+        ],
     )?;
     if let Some(ref display) = settings.usage_display {
-        if let Ok(json) = serde_json::to_string(display) {
-            db.set_setting("usage_display", &json)?;
-        }
+        let json = serde_json::to_string(display)
+            .map_err(|error| AppError::JsonSerialize { source: error })?;
+        tx.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+            rusqlite::params!["usage_display", json],
+        )?;
     }
+    tx.commit()?;
     Ok(())
 }
 

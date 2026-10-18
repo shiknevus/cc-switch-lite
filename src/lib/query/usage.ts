@@ -157,12 +157,6 @@ export const usageKeys = {
   detail: (requestId: string) =>
     [...usageKeys.all, "detail", requestId] as const,
   pricing: () => [...usageKeys.all, "pricing"] as const,
-  session: (appType: string, sessionId: string) =>
-    [...usageKeys.all, "session", appType, sessionId] as const,
-  limits: (providerId: string, appType: string) =>
-    [...usageKeys.all, "limits", providerId, appType] as const,
-  script: (providerId: string, appType: string) =>
-    [...usageKeys.all, providerId, appType] as const,
 };
 
 /** 把 UI 侧的 "all" 哨兵归一成 undefined（后端语义：不过滤）。 */
@@ -397,28 +391,10 @@ export function useSessionUsageLastSync(options?: UsageQueryOptions) {
   });
 }
 
-/** 单个会话的用量汇总（会话阅读页头部），只数会话日志导入的行。 */
-export function useSessionUsageSummary(appType: string, sessionId: string) {
-  return useQuery({
-    queryKey: usageKeys.session(appType, sessionId),
-    queryFn: () => usageApi.getSessionUsageSummary(appType, sessionId),
-    refetchInterval: DEFAULT_REFETCH_INTERVAL_MS,
-    refetchIntervalInBackground: false,
-  });
-}
-
 export function useModelPricing() {
   return useQuery({
     queryKey: usageKeys.pricing(),
     queryFn: usageApi.getModelPricing,
-  });
-}
-
-export function useProviderLimits(providerId: string, appType: string) {
-  return useQuery({
-    queryKey: usageKeys.limits(providerId, appType),
-    queryFn: () => usageApi.checkProviderLimits(providerId, appType),
-    enabled: !!providerId && !!appType,
   });
 }
 

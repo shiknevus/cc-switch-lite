@@ -1,15 +1,6 @@
 use crate::error::AppError;
 
 #[tauri::command]
-pub fn get_init_error() -> Option<serde_json::Value> {
-    None
-}
-
-/// 本次启动是否处于静默模式（开机自启 + 设置里开了静默启动）。
-///
-/// 前端渲染完成后本来会主动 `show()` 主窗口兜底；静默启动时不能再这么做，
-/// 否则窗口会在页面前端加载完后自己弹出来，静默设置就失效了。
-#[tauri::command]
 pub fn is_silent_startup() -> bool {
     crate::is_silent_startup()
 }
@@ -18,28 +9,49 @@ pub fn is_silent_startup() -> bool {
 pub fn open_dir(path: String) -> Result<(), AppError> {
     let p = std::path::Path::new(&path);
     if !p.exists() {
-        return Err(AppError::Message(format!("路径不存在: {path}")));
+        return Err(AppError::Message(format!("Path does not exist: {path}")));
     }
     #[cfg(target_os = "windows")]
     {
         std::process::Command::new("explorer")
             .arg(&path)
             .spawn()
-            .map_err(|e| AppError::Message(format!("无法打开资源管理器: {e}")))?;
+            .map_err(|e| AppError::Message(format!("Unable to open Explorer: {e}")))?;
     }
     #[cfg(target_os = "macos")]
     {
         std::process::Command::new("open")
             .arg(&path)
             .spawn()
-            .map_err(|e| AppError::Message(format!("无法打开 Finder: {e}")))?;
+            .map_err(|e| AppError::Message(format!("Unable to open Finder: {e}")))?;
     }
     #[cfg(target_os = "linux")]
     {
         std::process::Command::new("xdg-open")
             .arg(&path)
             .spawn()
-            .map_err(|e| AppError::Message(format!("无法打开文件管理器: {e}")))?;
+            .map_err(|e| AppError::Message(format!("Unable to open file manager: {e}")))?;
     }
     Ok(())
+}
+
+#[tauri::command]
+pub fn open_app_config_dir() -> Result<(), AppError> {
+    open_dir(crate::config::get_app_config_dir().to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+pub fn set_window_theme(
+    window: tauri::WebviewWindow,
+    theme: String,
+) -> Result<(), AppError> {
+    let native_theme = match theme.as_str() {
+        "dark" => Some(tauri_utils::Theme::Dark),
+        "light" => Some(tauri_utils::Theme::Light),
+        "system" => None,
+        _ => return Err(AppError::InvalidInput(format!("Unknown theme: {theme}"))),
+    };
+    window
+        .set_theme(native_theme)
+        .map_err(|error| AppError::Message(format!("Failed to set window theme: {error}")))
 }

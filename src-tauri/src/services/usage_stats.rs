@@ -26,6 +26,7 @@ pub struct UsageSummary {
     pub total_output_tokens: u64,
     pub total_cache_creation_tokens: u64,
     pub total_cache_read_tokens: u64,
+    pub success_count: u64,
     pub success_rate: f32,
     /// input + output + cache_creation + cache_read — the total tokens
     /// actually processed by the model (including cache hits). Used as the
@@ -93,6 +94,7 @@ fn usage_summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<UsageSumm
         total_output_tokens: total_output_tokens as u64,
         total_cache_creation_tokens: total_cache_creation_tokens as u64,
         total_cache_read_tokens: total_cache_read_tokens as u64,
+        success_count: success_count as u64,
         success_rate,
         real_total_tokens,
         cache_hit_rate,
@@ -289,6 +291,8 @@ pub struct PaginatedLogs {
     pub page: u32,
     pub page_size: u32,
 }
+
+const MAX_REQUEST_LOG_PAGE_SIZE: u32 = 200;
 
 /// 请求日志详情
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1246,6 +1250,7 @@ impl Database {
                     total_output_tokens: total_output_tokens as u64,
                     total_cache_creation_tokens: total_cache_creation_tokens as u64,
                     total_cache_read_tokens: total_cache_read_tokens as u64,
+                    success_count: success_count as u64,
                     success_rate,
                     real_total_tokens,
                     cache_hit_rate,
@@ -2107,6 +2112,7 @@ impl Database {
         page: u32,
         page_size: u32,
     ) -> Result<PaginatedLogs, AppError> {
+        let page_size = page_size.clamp(1, MAX_REQUEST_LOG_PAGE_SIZE);
         let conn = lock_conn!(self.conn);
 
         let mut conditions = vec![effective_usage_log_filter_for_range(
@@ -2165,7 +2171,8 @@ impl Database {
                 let count_params: Vec<&dyn rusqlite::ToSql> =
                     params.iter().map(|p| p.as_ref()).collect();
                 let total = conn.query_row(&count_sql, count_params.as_slice(), |row| {
-                    row.get::<_, i64>(0).map(|v| v as u32)
+                    row.get::<_, i64>(0)
+                        .map(|value| value.clamp(0, u32::MAX as i64) as u32)
                 })?;
                 *count_cache = Some(LogCountCache {
                     key: log_count_cache_key(filters),
@@ -2180,7 +2187,7 @@ impl Database {
         drop(count_cache);
 
         // 获取数据
-        let offset = page * page_size;
+        let offset = page.saturating_mul(page_size);
         params.push(Box::new(page_size as i64));
         params.push(Box::new(offset as i64));
 

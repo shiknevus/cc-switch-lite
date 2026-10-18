@@ -1,18 +1,29 @@
 use crate::settings::{get_settings_from_db, save_settings_to_db, AppSettings};
 use crate::store::AppState;
-use tauri::State;
+use tauri::{AppHandle, State};
 
 #[tauri::command]
 pub async fn get_settings(state: State<'_, AppState>) -> Result<AppSettings, String> {
-    Ok(get_settings_from_db(&state.db))
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || get_settings_from_db(&db))
+        .await
+        .map_err(|error| format!("读取设置任务失败: {error}"))
 }
 
 #[tauri::command]
 pub async fn save_settings(
+    app: AppHandle,
     state: State<'_, AppState>,
     settings: AppSettings,
 ) -> Result<bool, String> {
-    save_settings_to_db(&state.db, &settings).map_err(|e| e.to_string())?;
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || save_settings_to_db(&db, &settings))
+        .await
+        .map_err(|error| format!("保存设置任务失败: {error}"))?
+        .map_err(|e| e.to_string())?;
+    if let Err(error) = crate::tray::create_tray(&app) {
+        log::warn!("刷新系统托盘菜单失败: {error}");
+    }
     Ok(true)
 }
 

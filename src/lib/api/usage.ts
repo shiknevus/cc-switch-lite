@@ -10,44 +10,10 @@ import type {
   ModelPricing,
   ModelsDevSyncConfig,
   ModelsDevSyncState,
-  ProviderLimitStatus,
   PaginatedLogs,
   SessionSyncResult,
-  DataSourceSummary,
 } from "@/types/usage";
-import type { UsageResult } from "@/types";
-import type { AppId } from "./types";
-
 export const usageApi = {
-  // Provider usage script methods
-  query: async (providerId: string, appId: AppId): Promise<UsageResult> => {
-    return invoke("queryProviderUsage", { providerId, app: appId });
-  },
-
-  testScript: async (
-    providerId: string,
-    appId: AppId,
-    scriptCode: string,
-    timeout?: number,
-    apiKey?: string,
-    baseUrl?: string,
-    accessToken?: string,
-    userId?: string,
-    templateType?: string,
-  ): Promise<UsageResult> => {
-    return invoke("testUsageScript", {
-      providerId,
-      app: appId,
-      scriptCode,
-      timeout,
-      apiKey,
-      baseUrl,
-      accessToken,
-      userId,
-      templateType,
-    });
-  },
-
   // Proxy usage statistics methods
   getUsageSummary: async (
     startDate?: number,
@@ -63,13 +29,6 @@ export const usageApi = {
       providerName,
       model,
     });
-  },
-
-  getSessionUsageSummary: async (
-    appType: string,
-    sessionId: string,
-  ): Promise<UsageSummary> => {
-    return invoke("get_session_usage_summary", { appType, sessionId });
   },
 
   getUsageSummaryByApp: async (
@@ -210,13 +169,6 @@ export const usageApi = {
     return invoke("delete_model_pricing", { modelId });
   },
 
-  checkProviderLimits: async (
-    providerId: string,
-    appType: string,
-  ): Promise<ProviderLimitStatus> => {
-    return invoke("check_provider_limits", { providerId, appType });
-  },
-
   // Session usage sync
   syncSessionUsage: async (): Promise<SessionSyncResult> => {
     return invoke("sync_session_usage");
@@ -233,9 +185,5 @@ export const usageApi = {
 
   rebuildAgyUsage: async (): Promise<SessionSyncResult> => {
     return invoke("rebuild_agy_usage");
-  },
-
-  getDataSourceBreakdown: async (): Promise<DataSourceSummary[]> => {
-    return invoke("get_usage_data_sources");
   },
 };

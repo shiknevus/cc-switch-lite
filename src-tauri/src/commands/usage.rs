@@ -297,6 +297,15 @@ pub async fn sync_session_usage(
     let _guard = crate::services::session_usage::session_sync_mutex()
         .lock()
         .await;
+    // 防御重复重扫：如果距离最近一次完整扫描完成还不足 3 秒（如后端定时任务刚刚扫完），
+    // 直接返回空结果，避免前后端定时器在同一刷新周期内连续执行两次全量目录扫描。
+    if let Some(last_sync) = crate::services::session_usage::last_sync_completed_at() {
+        let elapsed = chrono::Utc::now().timestamp_millis() - last_sync;
+        if elapsed >= 0 && elapsed < 3000 {
+            log::debug!("跳过重复会话同步：距上次同步完成仅 {elapsed}ms");
+            return Ok(crate::services::session_usage::SessionSyncResult::default());
+        }
+    }
     tauri::async_runtime::spawn_blocking(move || {
         crate::services::session_usage::sync_all_unlocked(&db)
     })
@@ -307,6 +316,27 @@ pub async fn sync_session_usage(
 #[tauri::command]
 pub fn get_session_usage_last_sync() -> Option<i64> {
     crate::services::session_usage::last_sync_completed_at()
+}
+
+fn restore_rebuild_on_error(
+    db: &crate::database::Database,
+    backup: Option<std::path::PathBuf>,
+    result: Result<crate::services::session_usage::SessionSyncResult, AppError>,
+) -> Result<crate::services::session_usage::SessionSyncResult, AppError> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(error) => {
+            if let Some(path) = backup {
+                if let Err(restore_error) = db.restore_database_file(&path) {
+                    return Err(AppError::Message(format!(
+                        "{error}; automatic restore from {} also failed: {restore_error}",
+                        path.display()
+                    )));
+                }
+            }
+            Err(error)
+        }
+    }
 }
 
 fn finish_codex_rebuild(
@@ -325,10 +355,10 @@ pub async fn rebuild_codex_usage(
         .lock()
         .await;
     tauri::async_runtime::spawn_blocking(move || {
-        db.backup_database_file()?;
+        let backup = db.backup_database_file()?;
         db.reset_codex_usage()?;
         let result = crate::services::session_usage_codex::sync_codex_usage(&db);
-        finish_codex_rebuild(result)
+        finish_codex_rebuild(restore_rebuild_on_error(&db, backup, result))
     })
     .await
     .map_err(|error| AppError::Message(format!("Codex 用量重建任务失败: {error}")))?
@@ -350,10 +380,10 @@ pub async fn rebuild_gemini_usage(
         .lock()
         .await;
     tauri::async_runtime::spawn_blocking(move || {
-        db.backup_database_file()?;
+        let backup = db.backup_database_file()?;
         db.reset_gemini_usage()?;
         let result = crate::services::session_usage_gemini::sync_gemini_usage(&db);
-        finish_gemini_rebuild(result)
+        finish_gemini_rebuild(restore_rebuild_on_error(&db, backup, result))
     })
     .await
     .map_err(|error| AppError::Message(format!("Antigravity (agy) 用量重建任务失败: {error}")))?
@@ -382,10 +412,10 @@ pub async fn rebuild_dsh_usage(
         .lock()
         .await;
     tauri::async_runtime::spawn_blocking(move || {
-        db.backup_database_file()?;
+        let backup = db.backup_database_file()?;
         db.reset_dsh_usage()?;
         let result = crate::services::session_usage_dsh::sync_dsh_usage(&db);
-        finish_dsh_rebuild(result)
+        finish_dsh_rebuild(restore_rebuild_on_error(&db, backup, result))
     })
     .await
     .map_err(|error| AppError::Message(format!("Dsh 用量重建任务失败: {error}")))?

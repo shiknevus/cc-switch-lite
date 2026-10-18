@@ -50,7 +50,8 @@ export function aggregateSummaries(items: UsageSummary[]): UsageSummary {
 
   for (const s of items) {
     totalRequests += s.totalRequests;
-    successCount += Math.round((s.totalRequests * s.successRate) / 100);
+    // 直接用后端返回的成功数求和，避免从成功率反推（每项 round 一次会累积误差）
+    successCount += s.successCount;
     totalCostNum += parseFiniteNumber(s.totalCost) ?? 0;
     input += s.totalInputTokens;
     output += s.totalOutputTokens;
@@ -66,6 +67,7 @@ export function aggregateSummaries(items: UsageSummary[]): UsageSummary {
     totalOutputTokens: output,
     totalCacheCreationTokens: cacheCreation,
     totalCacheReadTokens: cacheRead,
+    successCount,
     successRate: totalRequests > 0 ? (successCount / totalRequests) * 100 : 0,
     realTotalTokens: input + output + cacheCreation + cacheRead,
     cacheHitRate: cacheableInput > 0 ? cacheRead / cacheableInput : 0,

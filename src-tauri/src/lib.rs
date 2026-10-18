@@ -185,6 +185,10 @@ pub fn run() {
             let sync_db = db.clone();
             tauri::async_runtime::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(750)).await;
+                if !settings::get_settings_from_db(&sync_db).session_auto_sync_enabled {
+                    log::info!("startup session scan skipped because automatic sync is disabled");
+                    return;
+                }
                 let _guard = services::session_usage::session_sync_mutex().lock().await;
                 let _ = tauri::async_runtime::spawn_blocking(move || {
                     services::session_usage::sync_all_unlocked(&sync_db)
@@ -192,15 +196,43 @@ pub fn run() {
                 .await;
             });
 
+            // 启动后异步执行一次历史用量日志聚合与清理（30天前明细汇总进 rollups 并删除，抑制数据库无限膨胀）
+            let prune_db = db.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                let _ = tauri::async_runtime::spawn_blocking(move || {
+                    match prune_db.rollup_and_prune(30) {
+                        Ok(pruned) if pruned > 0 => log::info!("历史用量日志已聚合剪枝: {pruned} 条"),
+                        Ok(_) => {}
+                        Err(e) => log::warn!("历史用量日志聚合与清理失败: {e}"),
+                    }
+                })
+                .await;
+            });
+
             let ticker_db = db.clone();
             tauri::async_runtime::spawn(async move {
-                let mut interval = tokio::time::interval(std::time::Duration::from_millis(1000));
+                // 将高频 1000ms 查库降频至 5000ms，显著降低常驻托盘时的无谓 SQLite 轮询开销
+                let mut interval = tokio::time::interval(std::time::Duration::from_millis(5000));
                 let mut last_sync = std::time::Instant::now();
+                let mut last_prune = std::time::Instant::now();
                 loop {
                     interval.tick().await;
+
+                    // 每日在后台执行一次历史用量聚合剪枝
+                    if last_prune.elapsed().as_secs() >= 86400 {
+                        last_prune = std::time::Instant::now();
+                        let p_db = ticker_db.clone();
+                        let _ = tauri::async_runtime::spawn_blocking(move || {
+                            if let Err(e) = p_db.rollup_and_prune(30) {
+                                log::warn!("周期性历史日志剪枝失败: {e}");
+                            }
+                        });
+                    }
+
                     let settings = settings::get_settings_from_db(&ticker_db);
                     if settings.session_auto_sync_enabled {
-                        let interval_ms = settings.usage_dashboard_refresh_interval_ms.max(1000);
+                        let interval_ms = settings.usage_dashboard_refresh_interval_ms.max(5000);
                         if last_sync.elapsed().as_millis() as u64 >= interval_ms {
                             last_sync = std::time::Instant::now();
                             let scan_db = ticker_db.clone();
@@ -248,9 +280,10 @@ pub fn run() {
             commands::settings::set_pricing_model_source,
             commands::settings::set_auto_launch,
             commands::settings::get_auto_launch_status,
-            commands::misc::get_init_error,
             commands::misc::is_silent_startup,
             commands::misc::open_dir,
+            commands::misc::open_app_config_dir,
+            commands::misc::set_window_theme,
         ])
         .run(tauri::generate_context!())
         .expect("error while running cc-switch-lite application");

@@ -19,6 +19,32 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 const ZSTD_MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
+const MAX_DSH_FILE_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_DSH_DECOMPRESSED_BYTES: usize = 256 * 1024 * 1024;
+
+fn read_limited(
+    reader: &mut impl Read,
+    output: &mut Vec<u8>,
+    remaining: usize,
+) -> Result<usize, std::io::Error> {
+    let mut buffer = [0u8; 8192];
+    let mut total = 0usize;
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        if read > remaining.saturating_sub(total) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "decompressed DSH session exceeds the safety limit",
+            ));
+        }
+        output.extend_from_slice(&buffer[..read]);
+        total += read;
+    }
+    Ok(total)
+}
 
 /// 解压可能由多个独立 zstd frame 串联组成的 zstd 压缩包（dsh 每次追加写入独立 frame）
 pub fn decompress_zstd_multiframe(bytes: &[u8]) -> Result<Vec<u8>, std::io::Error> {
@@ -40,7 +66,8 @@ pub fn decompress_zstd_multiframe(bytes: &[u8]) -> Result<Vec<u8>, std::io::Erro
         }
 
         let mut decoder = zstd::stream::Decoder::new(&mut cursor)?;
-        let bytes_read = decoder.read_to_end(&mut decompressed)?;
+        let limit = MAX_DSH_DECOMPRESSED_BYTES.saturating_sub(decompressed.len());
+        let bytes_read = read_limited(&mut decoder, &mut decompressed, limit)?;
         if bytes_read == 0 && cursor.position() == pos_before {
             break;
         }
@@ -48,9 +75,10 @@ pub fn decompress_zstd_multiframe(bytes: &[u8]) -> Result<Vec<u8>, std::io::Erro
 
     // 若由于尾部对齐或单个流解码，decompressed 仍然为空，尝试直接全量 decode_all 作为后备
     if decompressed.is_empty() {
-        if let Ok(all) = zstd::decode_all(std::io::Cursor::new(bytes)) {
-            return Ok(all);
-        }
+        let mut decoder = zstd::stream::Decoder::new(std::io::Cursor::new(bytes))?;
+        let mut all = Vec::new();
+        read_limited(&mut decoder, &mut all, MAX_DSH_DECOMPRESSED_BYTES)?;
+        return Ok(all);
     }
 
     Ok(decompressed)
@@ -159,6 +187,12 @@ pub fn sync_single_dsh_file(db: &Database, file_path: &Path) -> Result<SessionSy
     let metadata = fs::metadata(file_path)
         .map_err(|e| AppError::Config(format!("无法获取 dsh 文件元数据: {e}")))?;
     let file_modified = metadata_modified_nanos(&metadata);
+    if metadata.len() > MAX_DSH_FILE_BYTES {
+        return Err(AppError::Config(format!(
+            "DSH session file exceeds {} bytes",
+            MAX_DSH_FILE_BYTES
+        )));
+    }
     let file_size = metadata.len() as i64;
     let file_path_str = file_path.to_string_lossy().to_string();
 

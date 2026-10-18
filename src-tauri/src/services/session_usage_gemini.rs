@@ -29,6 +29,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+const MAX_GEMINI_FILE_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_GEMINI_LINE_BYTES: usize = 8 * 1024 * 1024;
+
 /// 从 Gemini message 中提取的 token 数据
 #[derive(Debug)]
 struct GeminiTokens {
@@ -224,6 +227,9 @@ fn sync_single_agy_transcript_file(
     let metadata = fs::metadata(file_path)
         .map_err(|e| AppError::Config(format!("无法读取文件元数据: {e}")))?;
     let file_modified = metadata_modified_nanos(&metadata);
+    if metadata.len() > MAX_GEMINI_FILE_BYTES {
+        return Err(AppError::Config(format!("Gemini session file exceeds {} bytes", MAX_GEMINI_FILE_BYTES)));
+    }
 
     if file_modified <= last_modified {
         return Ok((0, 0));
@@ -252,8 +258,11 @@ fn sync_single_agy_transcript_file(
     for line_result in reader.lines() {
         let line = match line_result {
             Ok(l) => l,
-            Err(_) => continue,
+            Err(error) => return Err(AppError::Config(format!("Gemini session read failed: {error}"))),
         };
+        if line.len() > MAX_GEMINI_LINE_BYTES {
+            return Err(AppError::Config("Gemini session line exceeds the safety limit".to_string()));
+        }
         if line.trim().is_empty() {
             continue;
         }
@@ -374,6 +383,9 @@ fn sync_single_gemini_file(
     let metadata = fs::metadata(file_path)
         .map_err(|e| AppError::Config(format!("无法读取文件元数据: {e}")))?;
     let file_modified = metadata_modified_nanos(&metadata);
+    if metadata.len() > MAX_GEMINI_FILE_BYTES {
+        return Err(AppError::Config(format!("Gemini session file exceeds {} bytes", MAX_GEMINI_FILE_BYTES)));
+    }
 
     // 文件未变化则跳过
     if file_modified <= last_modified {

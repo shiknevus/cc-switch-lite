@@ -1,4 +1,4 @@
-﻿// 浣跨敤缁熻鐩稿叧绫诲瀷瀹氫箟
+// 浣跨敤缁熻鐩稿叧绫诲瀷瀹氫箟
 
 export interface TokenUsage {
   inputTokens: number;
@@ -46,12 +46,6 @@ export interface SessionSyncResult {
   errors: string[];
 }
 
-export interface DataSourceSummary {
-  dataSource: string;
-  requestCount: number;
-  totalCostUsd: string;
-}
-
 export interface PaginatedLogs {
   data: RequestLog[];
   total: number;
@@ -89,6 +83,8 @@ export interface UsageSummary {
   totalOutputTokens: number;
   totalCacheCreationTokens: number;
   totalCacheReadTokens: number;
+  /** 成功请求数（status 2xx）。汇总聚合时直接求和，避免从成功率反推的舍入误差。 */
+  successCount: number;
   successRate: number;
   /** input + output + cache_creation + cache_read, all cache-normalized */
   realTotalTokens: number;
@@ -173,16 +169,6 @@ export interface UsageScopeFilters {
   model?: string;
 }
 
-export interface ProviderLimitStatus {
-  providerId: string;
-  dailyUsage: string;
-  dailyLimit?: string;
-  dailyExceeded: boolean;
-  monthlyUsage: string;
-  monthlyLimit?: string;
-  monthlyExceeded: boolean;
-}
-
 export type UsageRangePreset =
   | "today"
   | "1d"
@@ -234,7 +220,9 @@ export const KNOWN_APP_TYPES: ReadonlyArray<AppType> = [
   "codex",
   "gemini",
   "grokbuild",
+  "opencode",
   "pi",
+  "mcode",
   "dsh",
 ];
 

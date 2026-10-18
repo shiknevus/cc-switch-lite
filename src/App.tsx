@@ -5,7 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { UsageDashboard } from "@/components/usage/UsageDashboard";
 import { useSettings } from "@/hooks/useSettings";
 import { Button } from "@/components/ui/button";
-import { Moon, Sun, Globe } from "lucide-react";
+import { Monitor, Moon, Sun, Globe } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -19,6 +19,8 @@ import { toast } from "@/lib/toast";
 import { extractErrorMessage } from "@/utils/errorUtils";
 import { WindowControlsContext } from "@/components/shell/AppPageHeader";
 import { WindowControls } from "@/components/shell/WindowControls";
+import { isMac } from "@/lib/platform";
+import { syncModelsDevPricingOnStartup } from "@/lib/modelsDevAutoSync";
 
 export default function App() {
   const { t, i18n } = useTranslation();
@@ -40,6 +42,10 @@ export default function App() {
       .catch((error) => {
         console.debug("Failed to show the main window:", error);
       });
+    // 启动时在后台触发一次 models.dev 自动同步检查（若设置开启且超过6小时）
+    void syncModelsDevPricingOnStartup().catch((error) => {
+      console.debug("Failed to auto-sync models.dev pricing on startup:", error);
+    });
   }, []);
 
   useEffect(() => {
@@ -80,8 +86,13 @@ export default function App() {
     void autoSaveSettings({ language: lang });
   };
 
-  const toggleTheme = () => {
-    const nextTheme = theme === "dark" ? "light" : "dark";
+  /**
+   * 主题三态循环：深色 → 浅色 → 跟随系统 → 深色……
+   * 只保留两态会让用户手动切过一次后就再也回不到「跟随系统」，
+   * 与 README 宣称的 system/light/dark 三态不符。
+   */
+  const cycleTheme = () => {
+    const nextTheme = theme === "dark" ? "light" : theme === "light" ? "system" : "dark";
     setTheme(nextTheme);
     void autoSaveSettings({ theme: nextTheme });
   };
@@ -104,22 +115,36 @@ export default function App() {
           <DropdownMenuItem onClick={() => handleLanguageChange("zh")}>
             简体中文
           </DropdownMenuItem>
+          <DropdownMenuItem onClick={() => handleLanguageChange("zh-TW")}>
+            繁體中文
+          </DropdownMenuItem>
           <DropdownMenuItem onClick={() => handleLanguageChange("en")}>
             English
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={() => handleLanguageChange("ja")}>
+            日本語
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
 
-      {/* 主题切换 */}
+      {/* 主题切换（深色 → 浅色 → 跟随系统） */}
       <Button
         variant="ghost"
         size="icon"
         className="h-7 w-7 text-fg-3 hover:text-fg"
-        onClick={toggleTheme}
-        title={theme === "dark" ? "Switch to light" : "Switch to dark"}
+        onClick={cycleTheme}
+        title={
+          theme === "dark"
+            ? "Switch to light"
+            : theme === "light"
+              ? "Switch to system"
+              : "Switch to dark"
+        }
       >
         {theme === "dark" ? (
           <Sun className="h-4 w-4" />
+        ) : theme === "light" ? (
+          <Monitor className="h-4 w-4" />
         ) : (
           <Moon className="h-4 w-4" />
         )}
@@ -128,7 +153,7 @@ export default function App() {
   );
 
   return (
-    <WindowControlsContext.Provider value={<WindowControls />}>
+    <WindowControlsContext.Provider value={isMac() ? null : <WindowControls />}>
       <div className="flex h-screen w-screen flex-col bg-bg text-fg select-none overflow-hidden">
       {/* 主体用量仪表盘 */}
       <div className="min-h-0 flex-1 overflow-y-auto overflow-x-auto">

@@ -349,6 +349,7 @@ fn sync_single_grok_file_with_options(
     Ok(result)
 }
 
+#[cfg(test)]
 fn sync_single_grok_file(
     db: &Database,
     file_path: &Path,
@@ -416,7 +417,8 @@ fn parse_grok_usage_events(content: &str) -> Vec<GrokUsageEvent> {
     let mut events = Vec::new();
 
     for record in records {
-        if record.get("method").and_then(|v| v.as_str()) != Some("_x.ai/session/update") {
+        let method = record.get("method").and_then(|v| v.as_str());
+        if !matches!(method, Some("_x.ai/session/update" | "session/update")) {
             continue;
         }
         let update = record.get("params").and_then(|p| p.get("update"));
@@ -437,7 +439,14 @@ fn parse_grok_usage_events(content: &str) -> Vec<GrokUsageEvent> {
             continue;
         };
         // 沉降窗与接管守卫都依赖事件时刻，没有时间戳的事件无法安全导入。
-        let Some(created_at) = parse_event_timestamp(record.get("timestamp")) else {
+        let created_at = parse_event_timestamp(record.get("timestamp")).or_else(|| {
+            record
+                .get("params")
+                .and_then(|p| p.get("_meta"))
+                .and_then(|m| m.get("agentTimestampMs"))
+                .and_then(|ts| parse_event_timestamp(Some(ts)))
+        });
+        let Some(created_at) = created_at else {
             continue;
         };
 

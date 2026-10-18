@@ -2,6 +2,28 @@ use super::{lock_conn, Database};
 use crate::error::AppError;
 use rusqlite::Connection;
 
+const SCHEMA_VERSION: i64 = 1;
+
+fn ensure_column(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> Result<(), AppError> {
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2)",
+        rusqlite::params![table, column],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        conn.execute(
+            &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
+            [],
+        )?;
+    }
+    Ok(())
+}
+
 impl Database {
     pub(crate) fn create_tables(&self) -> Result<(), AppError> {
         let conn = lock_conn!(self.conn);
@@ -169,7 +191,138 @@ impl Database {
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
 
+        Self::migrate_schema(conn)?;
+
         Ok(())
+    }
+
+    fn migrate_schema(conn: &Connection) -> Result<(), AppError> {
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        if version >= SCHEMA_VERSION {
+            return Ok(());
+        }
+
+        conn.execute_batch("SAVEPOINT schema_migration")?;
+        let result = (|| {
+            // These columns were added after the first Lite/full-version databases.
+            // CREATE TABLE IF NOT EXISTS does not update an existing table, so make
+            // upgrades explicit and keep old databases readable.
+            ensure_column(conn, "providers", "website_url", "TEXT")?;
+            ensure_column(conn, "providers", "category", "TEXT")?;
+            ensure_column(conn, "providers", "created_at", "INTEGER")?;
+            ensure_column(conn, "providers", "sort_index", "INTEGER")?;
+            ensure_column(conn, "providers", "notes", "TEXT")?;
+            ensure_column(conn, "providers", "icon", "TEXT")?;
+            ensure_column(conn, "providers", "icon_color", "TEXT")?;
+            ensure_column(conn, "providers", "meta", "TEXT NOT NULL DEFAULT '{}'")?;
+            ensure_column(conn, "providers", "is_current", "BOOLEAN NOT NULL DEFAULT 0")?;
+            ensure_column(
+                conn,
+                "providers",
+                "in_failover_queue",
+                "BOOLEAN NOT NULL DEFAULT 0",
+            )?;
+
+            ensure_column(conn, "proxy_request_logs", "request_model", "TEXT")?;
+            ensure_column(conn, "proxy_request_logs", "pricing_model", "TEXT")?;
+            ensure_column(
+                conn,
+                "proxy_request_logs",
+                "cache_creation_tokens",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+            ensure_column(
+                conn,
+                "proxy_request_logs",
+                "cache_creation_cost_usd",
+                "TEXT NOT NULL DEFAULT '0'",
+            )?;
+            ensure_column(
+                conn,
+                "proxy_request_logs",
+                "input_token_semantics",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+            ensure_column(conn, "proxy_request_logs", "session_id", "TEXT")?;
+            ensure_column(conn, "proxy_request_logs", "provider_type", "TEXT")?;
+            ensure_column(
+                conn,
+                "proxy_request_logs",
+                "is_streaming",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+            ensure_column(
+                conn,
+                "proxy_request_logs",
+                "cost_multiplier",
+                "TEXT NOT NULL DEFAULT '1.0'",
+            )?;
+            ensure_column(
+                conn,
+                "proxy_request_logs",
+                "data_source",
+                "TEXT NOT NULL DEFAULT 'proxy'",
+            )?;
+
+            ensure_column(
+                conn,
+                "model_pricing",
+                "cache_read_cost_per_million",
+                "TEXT NOT NULL DEFAULT '0'",
+            )?;
+            ensure_column(
+                conn,
+                "model_pricing",
+                "cache_creation_cost_per_million",
+                "TEXT NOT NULL DEFAULT '0'",
+            )?;
+
+            ensure_column(
+                conn,
+                "usage_daily_rollups",
+                "request_model",
+                "TEXT NOT NULL DEFAULT ''",
+            )?;
+            ensure_column(
+                conn,
+                "usage_daily_rollups",
+                "pricing_model",
+                "TEXT NOT NULL DEFAULT ''",
+            )?;
+            ensure_column(
+                conn,
+                "usage_daily_rollups",
+                "input_token_semantics",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+
+            ensure_column(conn, "session_log_sync", "last_byte_offset", "INTEGER")?;
+            ensure_column(
+                conn,
+                "session_log_sync",
+                "last_tail_fingerprint",
+                "INTEGER",
+            )?;
+
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_request_logs_data_source_created_at
+                 ON proxy_request_logs(data_source, created_at)",
+                [],
+            )?;
+            conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
+            Ok::<(), AppError>(())
+        })();
+
+        match result {
+            Ok(()) => {
+                conn.execute_batch("RELEASE schema_migration")?;
+                Ok(())
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK TO schema_migration; RELEASE schema_migration");
+                Err(error)
+            }
+        }
     }
 
     /// 插入默认模型定价数据

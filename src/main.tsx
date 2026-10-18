@@ -8,6 +8,15 @@ import { ThemeProvider } from "@/components/theme-provider";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { queryClient } from "@/lib/query";
 import { Toaster } from "@/components/ui/sonner";
+import { installGlobalErrorHandlers } from "@/lib/frontendLogger";
+import { initializeInputModality } from "@/lib/inputModality";
+import { initializeWindowActivity } from "@/lib/windowActivity";
+
+// 全局副作用只需要挂一次：前端错误日志（脱敏）落盘、窗口活跃心跳、
+// 以及键盘/指针输入模态（决定焦点框与 tooltip 是否显示）。
+installGlobalErrorHandlers();
+initializeInputModality();
+initializeWindowActivity();
 
 try {
   const ua = navigator.userAgent || "";

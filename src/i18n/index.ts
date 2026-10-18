@@ -3,13 +3,15 @@ import { initReactI18next } from "react-i18next";
 
 import en from "./locales/en.json";
 import zh from "./locales/zh.json";
+import zhTW from "./locales/zh-TW.json";
+import ja from "./locales/ja.json";
 
-export type Language = "zh" | "en";
+export type Language = "zh" | "en" | "zh-TW" | "ja";
 
 const DEFAULT_LANGUAGE: Language = "zh";
 
 const isLanguage = (value: unknown): value is Language =>
-  value === "zh" || value === "en";
+  value === "zh" || value === "en" || value === "zh-TW" || value === "ja";
 
 const getInitialLanguage = (): Language => {
   if (typeof window !== "undefined") {
@@ -29,19 +31,22 @@ const getInitialLanguage = (): Language => {
         navigator.languages?.[0]?.toLowerCase())
       : undefined;
 
-  if (navigatorLang === "zh") {
-    return "zh";
+  if (navigatorLang === "zh-tw" || navigatorLang === "zh-hk") {
+    return "zh-TW";
   }
 
   if (navigatorLang?.startsWith("zh")) {
     return "zh";
   }
 
+  if (navigatorLang?.startsWith("ja")) {
+    return "ja";
+  }
+
   if (navigatorLang?.startsWith("en")) {
     return "en";
   }
 
-  // 认得出系统语言、但界面没有这种语言（德、法、韩…）时用英文：英文大多数人能读，简中几乎不能
   return navigatorLang ? "en" : DEFAULT_LANGUAGE;
 };
 
@@ -52,33 +57,34 @@ const resources = {
   zh: {
     translation: zh,
   },
+  "zh-TW": {
+    translation: zhTW,
+  },
+  ja: {
+    translation: ja,
+  },
 };
 
 i18n.use(initReactI18next).init({
   resources,
-  lng: getInitialLanguage(), // 根据本地存储或系统语言选择默认语言
-  fallbackLng: "en", // 如果缺少中文翻译则退回英文
-
+  lng: getInitialLanguage(),
+  fallbackLng: "en",
   interpolation: {
-    escapeValue: false, // React 已经默认转义
+    escapeValue: false,
   },
-
-  // 开发模式下显示调试信息
   debug: false,
 });
 
-/**
- * 用后端 settings.json 里保存的语言校正界面语言。
- *
- * 首屏语言取自 localStorage（同步可读），但它只是缓存：开发版与正式版的
- * WebView 来源不同、WebView 数据被清空时都会读不到或读到旧值，界面就落到
- * 系统语言。启动后拿到后端设置再对一次，不一致时切换并回写缓存。
- */
 export const syncLanguageFromSettings = (language?: string | null): void => {
   if (!isLanguage(language)) return;
 
   if (i18n.language !== language) {
     void i18n.changeLanguage(language);
+  }
+
+  // 页面语言声明与 UI 语言保持一致：切到英文后 <html lang> 不应仍写 zh-CN。
+  if (typeof document !== "undefined") {
+    document.documentElement.lang = language;
   }
 
   try {
@@ -89,5 +95,12 @@ export const syncLanguageFromSettings = (language?: string | null): void => {
     console.warn("[i18n] Failed to persist language preference", error);
   }
 };
+
+// i18next 语言变化事件同样同步 <html lang>（菜单直接调 changeLanguage 的路径）。
+i18n.on("languageChanged", (language) => {
+  if (typeof document !== "undefined") {
+    document.documentElement.lang = language;
+  }
+});
 
 export default i18n;
