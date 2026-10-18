@@ -1,0 +1,94 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release Tag (e.g. v1.0.0)'
+        required: false
+        default: 'v1.0.0'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: 'windows-latest'
+            args: ''
+          - platform: 'macos-latest'
+            args: ''
+          - platform: 'ubuntu-22.04'
+            args: ''
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies (Ubuntu only)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            pkg-config \
+            curl \
+            wget \
+            file \
+            patchelf \
+            libssl-dev \
+            librsvg2-dev \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build and Publish Tauri App
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || github.event.inputs.tag || 'v1.0.0' }}
+          releaseName: 'CC Switch Lite ${{ github.ref_type == 'tag' && github.ref_name || github.event.inputs.tag || 'v1.0.0' }}'
+          releaseBody: |
+            ## CC Switch Lite ${{ github.ref_type == 'tag' && github.ref_name || github.event.inputs.tag || 'v1.0.0' }}
+
+            CC Switch 极简轻量版，专注 AI 辅助编码工具（Claude Code、Codex、Agy、DSH）的会话与用量统计。
+
+            ### 🚀 功能特点 / Features
+            - **极速轻量**：启动快，内存占用低，无冗余代理或服务切换开销。
+            - **用量统计**：支持今日用量、本月用量、Token 统计、费用预估与首字延迟/吐字速度展示。
+            - **会话同步**：支持同步 Claude Code、Codex、Agy、DSH 会话历史并实时分析日志。
+            - **纯净界面**：无多余边框与标头，界面精炼直观。
+
+            ### 📦 资产下载 / Download
+            请在下方 Assets 下载对应系统的安装包：
+            - **Windows**: `.msi` (MSI 安装包) 或 `-setup.exe` (NSIS 安装包)
+            - **macOS**: `.dmg`
+            - **Linux**: `.AppImage` / `.deb`
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }}
