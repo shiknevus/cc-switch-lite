@@ -2376,6 +2376,9 @@
       "seconds": "{{seconds}} 秒"
     },
     "dataSources": "数据来源",
+    "windowBehavior": {
+      "trayHint": "关闭主窗口后会留在系统托盘继续后台同步用量；左键或双击托盘图标可随时唤回窗口。"
+    },
     "display": {
       "title": "显示",
       "currency": "币种",

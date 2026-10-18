@@ -1,4 +1,4 @@
-﻿export type AppId =
+export type AppId =
   | "claude"
   | "claude-desktop"
   | "codex"
@@ -24,6 +24,8 @@ export interface Settings {
   theme?: string;
   usageDashboardRefreshIntervalMs?: number;
   sessionAutoSyncEnabled?: boolean;
+  /** 关窗时隐藏到系统托盘继续后台同步，而不是退出进程 */
+  minimizeToTrayOnClose?: boolean;
   usageDisplay?: UsageDisplaySettings;
 }
 

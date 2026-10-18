@@ -2376,6 +2376,9 @@
       "seconds": "{{seconds}}s"
     },
     "dataSources": "Data sources",
+    "windowBehavior": {
+      "trayHint": "Closing the main window keeps CC Switch Lite running in the system tray, still syncing usage in the background. Click or double-click the tray icon to bring the window back."
+    },
     "display": {
       "title": "Display",
       "currency": "Currency",

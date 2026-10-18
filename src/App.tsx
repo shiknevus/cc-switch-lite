@@ -107,6 +107,10 @@ export default function App() {
           onSessionAutoSyncEnabledChange={(sessionAutoSyncEnabled) => {
             void autoSaveSettings({ sessionAutoSyncEnabled });
           }}
+          minimizeToTrayOnClose={settings?.minimizeToTrayOnClose ?? true}
+          onMinimizeToTrayOnCloseChange={(minimizeToTrayOnClose) => {
+            void autoSaveSettings({ minimizeToTrayOnClose });
+          }}
           usageDisplay={settings?.usageDisplay}
           onUsageDisplayChange={(usageDisplay) => {
             void autoSaveSettings({ usageDisplay });

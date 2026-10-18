@@ -14,6 +14,7 @@ pub mod services;
 pub mod session_manager;
 pub mod settings;
 pub mod store;
+pub mod tray;
 pub mod usage_events;
 
 use std::sync::Arc;
@@ -25,10 +26,39 @@ use crate::store::AppState;
 pub fn run() {
     let startup_page_handled = std::sync::atomic::AtomicBool::new(false);
     let mut builder = tauri::Builder::default()
+        // 单实例必须排在其它插件之前：第二个实例要在其余 setup 跑起来之前就被拦下
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            log::info!("检测到第二个实例，唤回已有窗口");
+            tray::show_main_window(app);
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_window_state::Builder::default().build());
+        .plugin(tauri_plugin_window_state::Builder::default().build())
+        // 拦截关闭：按设置决定隐到托盘后台常驻，还是直接退出进程
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let minimize_to_tray = window
+                    .try_state::<AppState>()
+                    .map(|state| settings::get_settings_from_db(&state.db).minimize_to_tray_on_close)
+                    .unwrap_or(false);
+
+                if minimize_to_tray {
+                    api.prevent_close();
+                    let _ = window.hide();
+                    #[cfg(target_os = "windows")]
+                    {
+                        // 连同任务栏图标一起收掉，否则窗口隐藏了任务栏还留一个空图标
+                        let _ = window.set_skip_taskbar(true);
+                    }
+                    log::info!("关闭请求已处理：隐藏到系统托盘，进程继续在后台运行");
+                } else {
+                    api.prevent_close();
+                    log::info!("关闭请求已处理：退出应用");
+                    window.app_handle().exit(0);
+                }
+            }
+        });
 
     #[cfg(target_os = "windows")]
     {
@@ -49,10 +79,42 @@ pub fn run() {
 
     builder
         .setup(|app| {
+            // 日志先落地：托盘/关窗这些后台行为的诊断全靠它，之前没注册插件，
+            // 所有 log::info! 都写进了黑洞。
+            {
+                use tauri_plugin_log::{RotationStrategy, Target, TargetKind, TimezoneStrategy};
+
+                let log_dir = config::get_app_config_dir().join("logs");
+                if let Err(e) = std::fs::create_dir_all(&log_dir) {
+                    eprintln!("创建日志目录失败: {e}");
+                }
+                app.handle().plugin(
+                    tauri_plugin_log::Builder::default()
+                        .level(log::LevelFilter::Info)
+                        .targets([
+                            Target::new(TargetKind::Stdout),
+                            Target::new(TargetKind::Folder {
+                                path: log_dir,
+                                file_name: Some("cc-switch-lite".into()),
+                            }),
+                        ])
+                        .rotation_strategy(RotationStrategy::KeepSome(4))
+                        .max_file_size(20 * 1024 * 1024)
+                        .timezone_strategy(TimezoneStrategy::UseLocal)
+                        .build(),
+                )?;
+                log::info!("=== CC Switch Lite v{} started ===", env!("CARGO_PKG_VERSION"));
+            }
+
             usage_events::init(app.handle().clone());
 
             let db = Arc::new(Database::init().expect("数据库初始化失败"));
             app.manage(AppState::new(db.clone()));
+
+            // 托盘要在 AppState 之后建：菜单文案按数据库里的界面语言取
+            if let Err(e) = tray::create_tray(app.handle()) {
+                log::error!("创建系统托盘失败，关窗后将无法唤回窗口: {e}");
+            }
 
             #[cfg(not(target_os = "windows"))]
             if let Some(main_window) = app.get_webview_window("main") {
