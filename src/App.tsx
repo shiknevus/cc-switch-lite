@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
+import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { UsageDashboard } from "@/components/usage/UsageDashboard";
 import { useSettings } from "@/hooks/useSettings";
@@ -13,11 +14,14 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useTheme } from "@/components/theme-provider";
 import { syncLanguageFromSettings } from "@/i18n";
+import { settingsApi } from "@/lib/api/settings";
+import { toast } from "@/lib/toast";
+import { extractErrorMessage } from "@/utils/errorUtils";
 import { WindowControlsContext } from "@/components/shell/AppPageHeader";
 import { WindowControls } from "@/components/shell/WindowControls";
 
 export default function App() {
-  const { i18n } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { theme, setTheme } = useTheme();
   const { settings, autoSaveSettings } = useSettings();
 
@@ -25,7 +29,17 @@ export default function App() {
     void getCurrentWindow().setDecorations(false).catch((error) => {
       console.debug("Failed to hide the native title bar:", error);
     });
-    void getCurrentWindow().show().then(() => getCurrentWindow().setFocus()).catch(() => {});
+    // 静默启动（开机自启 + 设置里开了静默）时不要主动 show：窗口要一直留在托盘，
+    // 否则前端一渲染完就自己弹出来，静默设置等于没生效。后端启动时已经决定好了。
+    void invoke<boolean>("is_silent_startup")
+      .then((silent) => {
+        if (silent) return;
+        const win = getCurrentWindow();
+        return win.show().then(() => win.setFocus());
+      })
+      .catch((error) => {
+        console.debug("Failed to show the main window:", error);
+      });
   }, []);
 
   useEffect(() => {
@@ -39,6 +53,27 @@ export default function App() {
       if (savedTheme !== theme) setTheme(savedTheme);
     }
   }, [settings?.language, settings?.theme, setTheme, theme]);
+
+  /**
+   * 开关开机自启：先落系统（注册表 / 登录项），成了再存设置。
+   *
+   * 顺序不能反：系统登记可能失败（组策略、macOS 拒绝授权），先把设置写成「开」
+   * 而系统里没登记，界面就会显示已开启但重启后并不自启。失败时保持原状并提示。
+   */
+  const applyAutoLaunch = async (enabled: boolean, silent: boolean) => {
+    try {
+      await settingsApi.setAutoLaunch(enabled, silent);
+    } catch (error) {
+      toast.error(
+        t("settings.autoLaunchFailed", {
+          defaultValue: "设置开机自启失败：{{error}}",
+          error: extractErrorMessage(error),
+        }),
+      );
+      return;
+    }
+    await autoSaveSettings({ launchOnStartup: enabled, silentStartup: silent });
+  };
 
   const handleLanguageChange = (lang: string) => {
     i18n.changeLanguage(lang);
@@ -110,6 +145,21 @@ export default function App() {
           minimizeToTrayOnClose={settings?.minimizeToTrayOnClose ?? true}
           onMinimizeToTrayOnCloseChange={(minimizeToTrayOnClose) => {
             void autoSaveSettings({ minimizeToTrayOnClose });
+          }}
+          launchOnStartup={settings?.launchOnStartup ?? false}
+          onLaunchOnStartupChange={(launchOnStartup) => {
+            // 静默启动靠启动项里的 --silent 参数生效，所以开关自启时把当前静默
+            // 设置一起带下去，别让启动项里的参数和界面上的选择对不上。
+            void applyAutoLaunch(launchOnStartup, settings?.silentStartup ?? false);
+          }}
+          silentStartup={settings?.silentStartup ?? false}
+          onSilentStartupChange={(silentStartup) => {
+            // 静默只对「已开启自启」有意义；自启没开时只存设置，不动系统。
+            if (settings?.launchOnStartup) {
+              void applyAutoLaunch(true, silentStartup);
+            } else {
+              void autoSaveSettings({ silentStartup });
+            }
           }}
           usageDisplay={settings?.usageDisplay}
           onUsageDisplayChange={(usageDisplay) => {

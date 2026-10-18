@@ -40,3 +40,23 @@ pub async fn set_pricing_model_source(
     Ok(())
 }
 
+/// 开关开机自启。`silent` 决定启动项里带不带 `--silent`。
+///
+/// 单独一个命令而不是并进 `save_settings`：注册表/登录项是系统状态，可能失败
+/// （被组策略挡住、macOS 拒绝授权），要让前端拿到明确的错误去回滚开关。
+#[tauri::command]
+pub async fn set_auto_launch(enabled: bool, silent: bool) -> Result<bool, String> {
+    if enabled {
+        crate::auto_launch::enable_auto_launch(silent).map_err(|e| e.to_string())?;
+    } else {
+        crate::auto_launch::disable_auto_launch().map_err(|e| e.to_string())?;
+    }
+    Ok(true)
+}
+
+/// 读系统里实际的自启状态：设置存的是意图，这里问的是系统真有没有登记。
+#[tauri::command]
+pub async fn get_auto_launch_status() -> Result<bool, String> {
+    crate::auto_launch::is_auto_launch_enabled().map_err(|e| e.to_string())
+}
+

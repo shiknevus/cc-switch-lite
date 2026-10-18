@@ -825,9 +825,9 @@
     "windowBehavior": "窗口行为",
     "windowBehaviorHint": "配置窗口最小化与 Claude 插件联动策略。",
     "launchOnStartup": "开机自启",
-    "launchOnStartupDescription": "随系统启动自动运行 CC Switch",
+    "launchOnStartupDescription": "随系统启动自动运行 CC Switch Lite",
     "silentStartup": "静默启动",
-    "silentStartupDescription": "程序启动时不显示主窗口，仅在系统托盘运行",
+    "silentStartupDescription": "开机自启时只驻留系统托盘，不显示主窗口",
     "autoLaunchFailed": "设置开机自启失败",
     "minimizeToTray": "关闭时最小化到托盘",
     "minimizeToTrayDescription": "勾选后点击关闭按钮会隐藏到系统托盘，取消则直接退出应用。",
@@ -2377,7 +2377,8 @@
     },
     "dataSources": "数据来源",
     "windowBehavior": {
-      "trayHint": "关闭主窗口后会留在系统托盘继续后台同步用量；左键或双击托盘图标可随时唤回窗口。"
+      "trayHint": "关闭主窗口后会留在系统托盘继续后台同步用量；左键单击托盘图标唤回窗口，右键单击打开菜单。",
+      "autoLaunchHint": "开机自启会把本程序登记到系统启动项里；勾选「静默启动」后开机时只驻留托盘、不弹主窗口。手动双击图标启动时始终会显示窗口。"
     },
     "display": {
       "title": "显示",

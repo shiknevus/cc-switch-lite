@@ -167,6 +167,16 @@ interface UsageDashboardProps {
   onMinimizeToTrayOnCloseChange?: (
     next: boolean,
   ) => Promise<boolean> | boolean | void;
+  /** 随系统启动自动运行 */
+  launchOnStartup?: boolean;
+  onLaunchOnStartupChange?: (
+    next: boolean,
+  ) => Promise<boolean> | boolean | void;
+  /** 开机自启拉起来时只驻留托盘，不显示主窗口 */
+  silentStartup?: boolean;
+  onSilentStartupChange?: (
+    next: boolean,
+  ) => Promise<boolean> | boolean | void;
   /** 从应用页「查看此应用的用量」进入时带上的应用筛选 */
   initialAppType?: AppTypeFilter;
   /** 「数据来源」里的「修改记录请求用量」：打开设置 → 本地路由 */
@@ -190,6 +200,10 @@ export function UsageDashboard({
   onSessionAutoSyncEnabledChange,
   minimizeToTrayOnClose = true,
   onMinimizeToTrayOnCloseChange,
+  launchOnStartup = false,
+  onLaunchOnStartupChange,
+  silentStartup = false,
+  onSilentStartupChange,
   initialAppType = "all",
   onOpenRoutingSettings,
   usageDisplay,
@@ -827,6 +841,12 @@ export function UsageDashboard({
               <WindowBehaviorSection
                 value={minimizeToTrayOnClose}
                 onChange={(next) => void onMinimizeToTrayOnCloseChange(next)}
+                launchOnStartup={launchOnStartup}
+                onLaunchOnStartupChange={(next) =>
+                  void onLaunchOnStartupChange?.(next)
+                }
+                silentStartup={silentStartup}
+                onSilentStartupChange={(next) => void onSilentStartupChange?.(next)}
               />
             )}
             <section aria-labelledby="usage-pricing-title">

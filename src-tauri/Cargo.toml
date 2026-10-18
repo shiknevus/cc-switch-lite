@@ -29,6 +29,7 @@ tauri-plugin-opener = "2"
 tauri-plugin-process = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-window-state = "2"
+auto-launch = "0.5"
 dirs = "5.0"
 reqwest = { version = "0.12", features = ["rustls-tls", "json"] }
 zstd = "0.13"

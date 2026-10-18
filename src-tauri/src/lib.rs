@@ -1,3 +1,4 @@
+pub mod auto_launch;
 pub mod claude_desktop_config;
 pub mod codex_config;
 pub mod codex_rollout_file;
@@ -17,11 +18,45 @@ pub mod store;
 pub mod tray;
 pub mod usage_events;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::Manager;
 
 use crate::database::Database;
 use crate::store::AppState;
+
+/// 本次启动是否「静默」：不显示主窗口，只驻留托盘。
+///
+/// 在 setup 里按设置定下来，之后被两处显示窗口的路径读取（Windows 的
+/// on_page_load、其它平台的 setup）。用静态量而不是闭包捕获，是因为
+/// on_page_load 的回调在 builder 阶段就要注册，那时数据库还没打开。
+static SILENT_STARTUP: AtomicBool = AtomicBool::new(false);
+
+/// 静默启动时不弹主窗口，只留托盘。
+pub fn is_silent_startup() -> bool {
+    SILENT_STARTUP.load(Ordering::Relaxed)
+}
+
+/// 启动时按设置对账开机自启项。
+///
+/// 只在「系统里已经登记着自启」时才重写：重写会把启动项指向当前的可执行文件
+/// 路径并带上正确的 `--silent`，修掉升级换目录、或改了静默开关但启动项没跟上
+/// 的情况。反过来，设置里写着要自启、系统里却没有时**不**重新登记——那多半是
+/// 用户自己在任务管理器里禁用了，替他加回来只会打架。
+fn reconcile_auto_launch(settings: &settings::AppSettings) {
+    if !settings.launch_on_startup {
+        return;
+    }
+    match auto_launch::is_auto_launch_enabled() {
+        Ok(true) => {
+            if let Err(e) = auto_launch::enable_auto_launch(settings.silent_startup) {
+                log::warn!("刷新开机自启项失败: {e}");
+            }
+        }
+        Ok(false) => log::info!("设置要求开机自启，但系统里没有该启动项，交由用户在设置里重新开启"),
+        Err(e) => log::warn!("读取开机自启状态失败: {e}"),
+    }
+}
 
 pub fn run() {
     let startup_page_handled = std::sync::atomic::AtomicBool::new(false);
@@ -70,9 +105,16 @@ pub fn run() {
             {
                 let window = webview.window();
                 let _ = window.set_decorations(false);
-                let _ = window.show();
-                let _ = window.set_focus();
-                log::info!("主页面加载完成，主窗口已显示");
+                // 静默启动：窗口始终不露出来，只留托盘
+                if is_silent_startup() {
+                    let _ = window.hide();
+                    let _ = window.set_skip_taskbar(true);
+                    log::info!("静默启动：主页面已加载，主窗口保持隐藏");
+                } else {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                    log::info!("主页面加载完成，主窗口已显示");
+                }
             }
         });
     }
@@ -111,6 +153,18 @@ pub fn run() {
             let db = Arc::new(Database::init().expect("数据库初始化失败"));
             app.manage(AppState::new(db.clone()));
 
+            // 静默启动要同时满足两点：设置里开着静默，且本次确实由开机自启拉起来
+            // （命令行带 --silent）。这样用户手动双击图标时总能看见窗口，不会因为
+            // 开着静默就再也打不开界面。
+            let settings = settings::get_settings_from_db(&db);
+            let silent = settings.silent_startup && auto_launch::started_with_silent_arg();
+            SILENT_STARTUP.store(silent, Ordering::Relaxed);
+
+            // 开机自启按设置对账：升级后安装路径可能变了，这里把启动项改写到当前
+            // 路径；用户已经手动取消了自启（设置里仍为 true 但系统里没了）时不强推
+            // 回来，避免和用户在任务管理器里的选择打架。
+            reconcile_auto_launch(&settings);
+
             // 托盘要在 AppState 之后建：菜单文案按数据库里的界面语言取
             if let Err(e) = tray::create_tray(app.handle()) {
                 log::error!("创建系统托盘失败，关窗后将无法唤回窗口: {e}");
@@ -119,8 +173,13 @@ pub fn run() {
             #[cfg(not(target_os = "windows"))]
             if let Some(main_window) = app.get_webview_window("main") {
                 let _ = main_window.set_decorations(false);
-                let _ = main_window.show();
-                let _ = main_window.set_focus();
+                if silent {
+                    let _ = main_window.hide();
+                    log::info!("静默启动：主窗口保持隐藏");
+                } else {
+                    let _ = main_window.show();
+                    let _ = main_window.set_focus();
+                }
             }
 
             let sync_db = db.clone();
@@ -187,7 +246,10 @@ pub fn run() {
             commands::settings::save_settings,
             commands::settings::get_pricing_model_source,
             commands::settings::set_pricing_model_source,
+            commands::settings::set_auto_launch,
+            commands::settings::get_auto_launch_status,
             commands::misc::get_init_error,
+            commands::misc::is_silent_startup,
             commands::misc::open_dir,
         ])
         .run(tauri::generate_context!())

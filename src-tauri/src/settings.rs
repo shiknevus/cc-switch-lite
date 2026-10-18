@@ -28,6 +28,12 @@ pub struct AppSettings {
     /// 点关闭按钮时隐藏到系统托盘继续在后台同步，而不是退出进程。
     #[serde(default = "default_true")]
     pub minimize_to_tray_on_close: bool,
+    /// 随系统启动自动运行。真正的启停由 `auto_launch` 模块落到系统里，这里只存意图。
+    #[serde(default)]
+    pub launch_on_startup: bool,
+    /// 开机自启拉起来时只驻留托盘，不显示主窗口。
+    #[serde(default)]
+    pub silent_startup: bool,
     pub usage_display: Option<UsageDisplaySettings>,
 }
 
@@ -55,6 +61,8 @@ impl Default for AppSettings {
             usage_dashboard_refresh_interval_ms: default_refresh_interval(),
             session_auto_sync_enabled: true,
             minimize_to_tray_on_close: true,
+            launch_on_startup: false,
+            silent_startup: false,
             usage_display: Some(UsageDisplaySettings {
                 currency: Some("USD".to_string()),
                 exchange_rates: None,
@@ -86,6 +94,12 @@ pub fn get_settings_from_db(db: &Database) -> AppSettings {
     if let Ok(Some(minimize)) = db.get_setting("minimize_to_tray_on_close") {
         settings.minimize_to_tray_on_close = minimize != "false";
     }
+    if let Ok(Some(launch)) = db.get_setting("launch_on_startup") {
+        settings.launch_on_startup = launch != "false";
+    }
+    if let Ok(Some(silent)) = db.get_setting("silent_startup") {
+        settings.silent_startup = silent != "false";
+    }
     if let Ok(Some(display_json)) = db.get_setting("usage_display") {
         if let Ok(display) = serde_json::from_str::<UsageDisplaySettings>(&display_json) {
             settings.usage_display = Some(display);
@@ -109,6 +123,14 @@ pub fn save_settings_to_db(db: &Database, settings: &AppSettings) -> Result<(), 
     db.set_setting(
         "minimize_to_tray_on_close",
         if settings.minimize_to_tray_on_close { "true" } else { "false" },
+    )?;
+    db.set_setting(
+        "launch_on_startup",
+        if settings.launch_on_startup { "true" } else { "false" },
+    )?;
+    db.set_setting(
+        "silent_startup",
+        if settings.silent_startup { "true" } else { "false" },
     )?;
     if let Some(ref display) = settings.usage_display {
         if let Ok(json) = serde_json::to_string(display) {
@@ -156,5 +178,37 @@ mod tests {
         let parsed: AppSettings =
             serde_json::from_str(r#"{"minimizeToTrayOnClose":false}"#).expect("解析设置");
         assert!(!parsed.minimize_to_tray_on_close);
+    }
+
+    /// 开机自启与静默启动默认都不开：默认帮着登记启动项是越权，用户没点过就不该有。
+    #[test]
+    fn auto_launch_defaults_off() {
+        let db = Database::memory().expect("内存库");
+        let settings = get_settings_from_db(&db);
+        assert!(!settings.launch_on_startup);
+        assert!(!settings.silent_startup);
+    }
+
+    /// 两个新开关都要能存下来读回来，否则重启后开机自启/静默会丢。
+    #[test]
+    fn auto_launch_round_trips_through_db() {
+        let db = Database::memory().expect("内存库");
+
+        let mut settings = AppSettings::default();
+        settings.launch_on_startup = true;
+        settings.silent_startup = true;
+        save_settings_to_db(&db, &settings).expect("保存设置");
+
+        let loaded = get_settings_from_db(&db);
+        assert!(loaded.launch_on_startup);
+        assert!(loaded.silent_startup);
+
+        settings.launch_on_startup = false;
+        settings.silent_startup = false;
+        save_settings_to_db(&db, &settings).expect("保存设置");
+
+        let loaded = get_settings_from_db(&db);
+        assert!(!loaded.launch_on_startup);
+        assert!(!loaded.silent_startup);
     }
 }

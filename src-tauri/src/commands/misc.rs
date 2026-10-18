@@ -5,6 +5,15 @@ pub fn get_init_error() -> Option<serde_json::Value> {
     None
 }
 
+/// 本次启动是否处于静默模式（开机自启 + 设置里开了静默启动）。
+///
+/// 前端渲染完成后本来会主动 `show()` 主窗口兜底；静默启动时不能再这么做，
+/// 否则窗口会在页面前端加载完后自己弹出来，静默设置就失效了。
+#[tauri::command]
+pub fn is_silent_startup() -> bool {
+    crate::is_silent_startup()
+}
+
 #[tauri::command]
 pub fn open_dir(path: String) -> Result<(), AppError> {
     let p = std::path::Path::new(&path);

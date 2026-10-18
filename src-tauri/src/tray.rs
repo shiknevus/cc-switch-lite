@@ -60,12 +60,16 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
     let mut builder = TrayIconBuilder::with_id(TRAY_ID)
         .tooltip(TRAY_TOOLTIP)
         .menu(&menu)
-        // 左键也直接出菜单：轻量版没有托盘面板，菜单是唯一入口
-        .show_menu_on_left_click(true)
+        // 左键单击显示主窗口，菜单只在右键弹（下面的 on_tray_icon_event 负责左键）
+        .show_menu_on_left_click(false)
         .on_menu_event(|app, event| handle_menu_event(app, &event.id.0))
         .on_tray_icon_event(|tray, event| {
-            // 双击图标唤回主窗口（Windows 上左键单击已经出菜单）
-            if let tauri::tray::TrayIconEvent::DoubleClick { .. } = event {
+            if let tauri::tray::TrayIconEvent::Click {
+                button: tauri::tray::MouseButton::Left,
+                button_state: tauri::tray::MouseButtonState::Up,
+                ..
+            } = event
+            {
                 show_main_window(tray.app_handle());
             }
         });

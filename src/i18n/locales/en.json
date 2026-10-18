@@ -825,9 +825,9 @@
     "windowBehavior": "Window Behavior",
     "windowBehaviorHint": "Configure window minimize and Claude plugin integration policies.",
     "launchOnStartup": "Launch on Startup",
-    "launchOnStartupDescription": "Automatically run CC Switch when system starts",
+    "launchOnStartupDescription": "Automatically run CC Switch Lite when the system starts",
     "silentStartup": "Silent Startup",
-    "silentStartupDescription": "Start in background mode without showing main window",
+    "silentStartupDescription": "When launched at startup, stay in the system tray without showing the main window",
     "autoLaunchFailed": "Failed to set auto-launch",
     "minimizeToTray": "Minimize to tray on close",
     "minimizeToTrayDescription": "When checked, clicking the close button will hide to system tray, otherwise the app will exit directly.",
@@ -2377,7 +2377,8 @@
     },
     "dataSources": "Data sources",
     "windowBehavior": {
-      "trayHint": "Closing the main window keeps CC Switch Lite running in the system tray, still syncing usage in the background. Click or double-click the tray icon to bring the window back."
+      "trayHint": "Closing the main window keeps CC Switch Lite running in the system tray, still syncing usage in the background. Left-click the tray icon to bring the window back, right-click for the menu.",
+      "autoLaunchHint": "Launch on startup registers CC Switch Lite with your system's startup items. With Silent Startup on, booting only leaves it in the tray instead of opening the main window. Launching it manually always shows the window."
     },
     "display": {
       "title": "Display",
