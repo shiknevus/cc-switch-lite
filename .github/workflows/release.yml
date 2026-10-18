@@ -66,16 +66,24 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Set Release Tag
+        id: vars
+        shell: bash
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build and Publish Tauri App
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_type == 'tag' && github.ref_name || github.event.inputs.tag || 'v1.0.0' }}
-          releaseName: 'CC Switch Lite ${{ github.ref_type == 'tag' && github.ref_name || github.event.inputs.tag || 'v1.0.0' }}'
+          tagName: ${{ steps.vars.outputs.tag }}
+          releaseName: CC Switch Lite ${{ steps.vars.outputs.tag }}
           releaseBody: |
-            ## CC Switch Lite ${{ github.ref_type == 'tag' && github.ref_name || github.event.inputs.tag || 'v1.0.0' }}
-
             CC Switch 极简轻量版，专注 AI 辅助编码工具（Claude Code、Codex、Agy、DSH）的会话与用量统计。
 
             ### 🚀 功能特点 / Features
