@@ -495,7 +495,6 @@ export function RequestLogTable({
         </td>
       ),
     };
-
     return (
       <tr
         key={log.requestId}
@@ -508,17 +507,11 @@ export function RequestLogTable({
       </tr>
     );
   };
-
-  // 默认 10 列时 620px：最小窗口（900）展开侧栏表格区只有 644px，再宽最右的速度列就被挤进横向滚动；
-  // 多开一列加一份宽度，列再多就横向滚动，不把每列挤到看不清
-  const minWidth = 620 + Math.max(0, columns.length - 10) * 64;
-
   return (
     <div className="flex flex-col">
       <div className={usageTable.scroller}>
         <table
           className={usageTable.table}
-          style={{ minWidth }}
           aria-label={t("usage.requestLogs")}
         >
           <thead>

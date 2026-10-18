@@ -67,6 +67,9 @@ pub fn run() {
             });
 
             if let Some(main_window) = app.get_webview_window("main") {
+                // Enforce the borderless window before first paint; window-state restoration
+                // can otherwise bring back the native light title bar.
+                let _ = main_window.set_decorations(false);
                 let _ = main_window.show();
                 let _ = main_window.set_focus();
             }

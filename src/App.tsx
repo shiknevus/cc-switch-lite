@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { UsageDashboard } from "@/components/usage/UsageDashboard";
 import { useSettings } from "@/hooks/useSettings";
 import { Button } from "@/components/ui/button";
@@ -19,6 +20,12 @@ export default function App() {
   const { i18n } = useTranslation();
   const { theme, setTheme } = useTheme();
   const { settings, autoSaveSettings } = useSettings();
+
+  useEffect(() => {
+    void getCurrentWindow().setDecorations(false).catch((error) => {
+      console.debug("Failed to hide the native title bar:", error);
+    });
+  }, []);
 
   useEffect(() => {
     syncLanguageFromSettings(settings?.language);
@@ -88,7 +95,7 @@ export default function App() {
     <WindowControlsContext.Provider value={<WindowControls />}>
       <div className="flex h-screen w-screen flex-col bg-bg text-fg select-none overflow-hidden">
       {/* 主体用量仪表盘 */}
-      <div className="flex-1 overflow-auto">
+      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
         <UsageDashboard
           refreshIntervalMs={settings?.usageDashboardRefreshIntervalMs}
           onRefreshIntervalChange={(usageDashboardRefreshIntervalMs) => {

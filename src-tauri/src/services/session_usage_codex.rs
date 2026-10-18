@@ -46,6 +46,7 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 
 const CODEX_THREAD_REQUEST_ID_PREFIX: &str = "codex_session:thread-v1";
+const CODEX_FIRST_TOKEN_BACKFILL_SETTING: &str = "codex_first_token_backfill_v1";
 
 /// 累计 token 用量（跟踪 total_token_usage 字段）
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -378,6 +379,10 @@ impl RequestTimer {
                 if self.request_start_ms.is_none() {
                     self.request_start_ms = self.last_boundary_ms;
                 }
+                self.first_output_ms = Some(
+                    self.first_output_ms
+                        .map_or(timestamp_ms, |at| at.min(timestamp_ms)),
+                );
                 self.last_model_output_ms = Some(timestamp_ms);
                 self.tool_output_after_model_output_ms = None;
             }
@@ -984,6 +989,10 @@ pub fn sync_codex_usage(db: &Database) -> Result<SessionSyncResult, AppError> {
     let files = collect_codex_session_files(&codex_dir);
     let rollout_index = build_rollout_index(&files);
     let mut pass = CodexSyncPass::load(db)?;
+    // Existing installs may have rows created before tool-call timing was treated
+    // as first-token output. Run one incremental backfill pass for those rows.
+    let force_timing_backfill =
+        db.get_setting(CODEX_FIRST_TOKEN_BACKFILL_SETTING)?.is_none();
 
     let mut result = SessionSyncResult {
         imported: 0,
@@ -995,7 +1004,13 @@ pub fn sync_codex_usage(db: &Database) -> Result<SessionSyncResult, AppError> {
     };
 
     for file_path in &files {
-        match sync_single_codex_file(db, file_path, &rollout_index, &mut pass) {
+        match sync_single_codex_file(
+            db,
+            file_path,
+            &rollout_index,
+            &mut pass,
+            force_timing_backfill,
+        ) {
             Ok(file_result) => {
                 result.imported = result.imported.saturating_add(file_result.imported);
                 result.skipped = result.skipped.saturating_add(file_result.skipped);
@@ -1012,6 +1027,10 @@ pub fn sync_codex_usage(db: &Database) -> Result<SessionSyncResult, AppError> {
                 result.errors.push(msg);
             }
         }
+    }
+
+    if force_timing_backfill && result.errors.is_empty() {
+        db.set_setting(CODEX_FIRST_TOKEN_BACKFILL_SETTING, "1")?;
     }
 
     if result.imported > 0 || result.deferred_files > 0 {
@@ -1877,11 +1896,70 @@ fn update_codex_sync_state(
 }
 
 /// 同步单个 Codex JSONL 文件。
+fn codex_file_has_missing_timing(
+    db: &Database,
+    file_path: &Path,
+) -> Result<bool, AppError> {
+    let ids = [
+        thread_id_from_filename(file_path),
+        leading_thread_id_from_filename(file_path),
+    ];
+    if ids.iter().all(Option::is_none) {
+        return Ok(false);
+    }
+    let conn = lock_conn!(db.conn);
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM proxy_request_logs
+            WHERE app_type = 'codex'
+              AND session_id IN (?1, ?2)
+              AND latency_ms > 0
+              AND first_token_ms IS NULL
+        )",
+        rusqlite::params![ids[0].as_deref(), ids[1].as_deref()],
+        |row| row.get(0),
+    )?;
+    Ok(exists)
+}
+
+fn backfill_codex_timings(
+    db: &Database,
+    root_thread_id: &str,
+    parsed: &ParsedCodexFile,
+) -> Result<(), AppError> {
+    let conn = lock_conn!(db.conn);
+    let tx = conn.unchecked_transaction()?;
+    for event in &parsed.token_events {
+        let Some(event_index) = event.event_index else {
+            continue;
+        };
+        let Some(timing) = event.timing else {
+            continue;
+        };
+        let Some(first_token_ms) = timing.first_token_ms else {
+            continue;
+        };
+        let request_id = format!(
+            "{CODEX_THREAD_REQUEST_ID_PREFIX}:{root_thread_id}:{event_index}"
+        );
+        tx.execute(
+            "UPDATE proxy_request_logs
+             SET latency_ms = CASE WHEN latency_ms = 0 THEN ?1 ELSE latency_ms END,
+                 first_token_ms = CASE WHEN first_token_ms IS NULL THEN ?2 ELSE first_token_ms END
+             WHERE request_id = ?3",
+            rusqlite::params![timing.latency_ms, first_token_ms, request_id],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 fn sync_single_codex_file(
     db: &Database,
     file_path: &Path,
     rollout_index: &RolloutIndex,
     pass: &mut CodexSyncPass,
+    force_timing_backfill: bool,
 ) -> Result<CodexFileSyncResult, AppError> {
     let file_path_str = file_path.to_string_lossy().to_string();
 
@@ -1897,7 +1975,10 @@ fn sync_single_codex_file(
     // Windows may keep mtime unchanged while Codex holds its write handle open.
     // Legacy cursors have no byte offset: rescan once to catch up and persist it.
     let last_byte_offset = pass.byte_offsets.get(&file_path_str).copied().flatten();
-    if file_modified == last_modified && last_byte_offset == i64::try_from(file_size).ok() {
+    let unchanged = file_modified == last_modified
+        && last_byte_offset == i64::try_from(file_size).ok();
+    if unchanged
+        && (!force_timing_backfill || !codex_file_has_missing_timing(db, file_path)?) {
         return Ok(CodexFileSyncResult::default());
     }
 
@@ -1962,6 +2043,8 @@ fn sync_single_codex_file(
             PendingReason::Stable("含计费 token 但尚无 session_meta".to_string()),
         ));
     }
+
+    backfill_codex_timings(db, root_thread_id, &parsed)?;
 
     let replay_prefix = match &parsed.parent {
         ParentResolution::None | ParentResolution::Continuation { .. } => 0,
@@ -2139,7 +2222,7 @@ fn sync_single_codex_file(
         result.suspected_duplicates = result.suspected_duplicates.saturating_add(batch_suspected);
     }
 
-    if to_insert.is_empty() {
+    if to_insert.is_empty() && !unchanged {
         update_codex_sync_state(db, &file_path_str, file_modified, &parsed)?;
     }
     Ok(result)
@@ -2557,7 +2640,13 @@ mod tests {
             .map(|path| path.to_path_buf())
             .collect::<Vec<_>>();
         let mut pass = CodexSyncPass::load(db)?;
-        sync_single_codex_file(db, file, &build_rollout_index(&files), &mut pass)
+        sync_single_codex_file(
+            db,
+            file,
+            &build_rollout_index(&files),
+            &mut pass,
+            false,
+        )
     }
 
     fn assert_unchanged_codex_file_is_skipped(db: &Database, file: &Path) -> Result<(), AppError> {
@@ -5946,7 +6035,7 @@ mod tests {
             parsed_latencies(&lines),
             vec![Some(5_100), Some(2_999), Some(1_999)]
         );
-        assert_eq!(parsed_first_tokens(&lines), vec![Some(2_200), None, None]);
+        assert_eq!(parsed_first_tokens(&lines), vec![Some(2_200), Some(2_899), None]);
 
         // 推出来的首字要落进库里
         let dir = tempdir().unwrap();
@@ -5966,7 +6055,7 @@ mod tests {
             .unwrap()
             .map(|row| row.unwrap())
             .collect();
-        assert_eq!(stored, vec![Some(2_200), None, None]);
+        assert_eq!(stored, vec![Some(2_200), Some(2_899), None]);
         Ok(())
     }
 

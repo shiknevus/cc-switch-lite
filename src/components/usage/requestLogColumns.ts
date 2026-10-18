@@ -21,8 +21,18 @@ export const REQUEST_LOG_COLUMNS = [
     defaultVisible: false,
   },
   { id: "cost", labelKey: "usage.cost", defaultVisible: true },
-  { id: "speed", labelKey: "usage.speed", defaultVisible: true },
-  { id: "firstToken", labelKey: "usage.firstToken", defaultVisible: true },
+  {
+    id: "speed",
+    labelKey: "usage.speed",
+    defaultVisible: true,
+    locked: true,
+  },
+  {
+    id: "firstToken",
+    labelKey: "usage.firstToken",
+    defaultVisible: true,
+    locked: true,
+  },
   {
     id: "duration",
     labelKey: "usage.logColumns.duration",
