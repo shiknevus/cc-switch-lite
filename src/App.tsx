@@ -1,0 +1,100 @@
+import { useTranslation } from "react-i18next";
+import { UsageDashboard } from "@/components/usage/UsageDashboard";
+import { useSettings } from "@/hooks/useSettings";
+import { Button } from "@/components/ui/button";
+import { Moon, Sun, Globe } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { useTheme } from "@/components/theme-provider";
+
+export default function App() {
+  const { i18n } = useTranslation();
+  const { theme, setTheme } = useTheme();
+  const { settings, autoSaveSettings } = useSettings();
+
+  const handleLanguageChange = (lang: string) => {
+    i18n.changeLanguage(lang);
+    void autoSaveSettings({ language: lang });
+  };
+
+  const toggleTheme = () => {
+    const nextTheme = theme === "dark" ? "light" : "dark";
+    setTheme(nextTheme);
+    void autoSaveSettings({ theme: nextTheme });
+  };
+
+  const extraActions = (
+    <div className="flex items-center gap-1 ps-1 border-s border-border">
+      {/* 语言切换 */}
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 text-fg-3 hover:text-fg"
+            title="Language"
+          >
+            <Globe className="h-4 w-4" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-32 bg-surface border-border">
+          <DropdownMenuItem onClick={() => handleLanguageChange("zh")}>
+            简体中文
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={() => handleLanguageChange("zh-TW")}>
+            繁體中文
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={() => handleLanguageChange("en")}>
+            English
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={() => handleLanguageChange("ja")}>
+            日本語
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+
+      {/* 主题切换 */}
+      <Button
+        variant="ghost"
+        size="icon"
+        className="h-7 w-7 text-fg-3 hover:text-fg"
+        onClick={toggleTheme}
+        title={theme === "dark" ? "Switch to light" : "Switch to dark"}
+      >
+        {theme === "dark" ? (
+          <Sun className="h-4 w-4" />
+        ) : (
+          <Moon className="h-4 w-4" />
+        )}
+      </Button>
+    </div>
+  );
+
+  return (
+    <div className="flex h-screen w-screen flex-col bg-bg text-fg select-none overflow-hidden">
+      {/* 主体用量仪表盘 */}
+      <div className="flex-1 overflow-auto">
+        <UsageDashboard
+          refreshIntervalMs={settings?.usageDashboardRefreshIntervalMs}
+          onRefreshIntervalChange={(usageDashboardRefreshIntervalMs) => {
+            void autoSaveSettings({ usageDashboardRefreshIntervalMs });
+          }}
+          sessionAutoSyncEnabled={settings?.sessionAutoSyncEnabled ?? true}
+          settingsReady={settings != null}
+          onSessionAutoSyncEnabledChange={(sessionAutoSyncEnabled) => {
+            void autoSaveSettings({ sessionAutoSyncEnabled });
+          }}
+          usageDisplay={settings?.usageDisplay}
+          onUsageDisplayChange={(usageDisplay) => {
+            void autoSaveSettings({ usageDisplay });
+          }}
+          headerExtraActions={extraActions}
+        />
+      </div>
+    </div>
+  );
+}

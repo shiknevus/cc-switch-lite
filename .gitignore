@@ -1,0 +1,17 @@
+﻿node_modules/
+dist/
+release/
+src-tauri/target/
+src-tauri/gen/schemas
+.DS_Store
+Thumbs.db
+*.log
+.env
+.env.local
+*.tsbuildinfo
+/.claude
+/.codex
+/.gemini
+/.cc-switch
+/.idea
+/.vscode

@@ -1,0 +1,91 @@
+# CC Switch Lite (用量统计轻量版)
+
+轻量化、低占用的 AI 编程工具用量与费用统计助手。专注于从本机主流 AI 编程助手中自动同步、解析和统计 Token 用量、请求延迟、成功率及费用开销。
+
+---
+
+## ✨ 核心功能
+
+- **多客户端原生会话用量同步**：
+  - **Claude Code**：自动扫描并解析 `~/.claude/projects/` 会话历史日志及增量。
+  - **Codex**：解析 rollout 会话文件，支持分段会话、分支及增量日志扫描。
+  - **Antigravity CLI (agy)** / **Gemini**：自动扫描与同步本地会话。
+  - **OpenCode**：自动读取 `opencode.db`（支持 v1 与 v2 Schema、compaction 及消息去重）。
+  - **Grok Build**：自动扫描 `~/.grok/sessions/` 并解析 `updates.jsonl` 转录日志。
+  - **Pi**：自动发现并解析 Pi 树状结构会话日志，支持子 Agent、Fork 及成本追踪。
+  - **MiniMax Code (MCode)**：自动读取本地 SQLite 运行时用量状态。
+- **可视化仪表盘**：
+  - **用量总览（Hero Cards）**：实时展示今日、7天、30天或自定义时间跨度内的总费用、总 Token 数、缓存命中率、请求数。
+  - **趋势分析图表（Trend Chart）**：支持按天、小时折线图与柱状图切换，展示 Token 用量、费用走势及缓存命中趋势。
+  - **用量热力图（Heatmap）**：年度活跃天数与每天使用强度一览。
+  - **模型与供应商分布统计**：按模型（输入/输出/缓存）及供应商维度分组透视分析，支持成功率和平均耗时测算。
+  - **详细请求日志查看（Request Logs）**：支持按客户端、供应商、模型、状态码及时间段筛选分页查看每条请求的明细（含上下文及延迟信息）。
+  - **模型定价与 models.dev 自动同步**：内置 200+ 主流模型定价表，支持手动维护自定义价格，亦可从 models.dev 远程拉取最新官方定价。
+  - **多币种与汇率换算**：支持 USD、CNY、EUR、GBP、JPY 等币种实时汇率折算显示。
+  - **多语言与外观**：支持简体中文、繁體中文、English、日本語，支持跟随系统/深色/浅色主题。
+
+---
+
+## 🚀 相比完整版 CC Switch 的轻量化裁剪
+
+| 模块 | CC Switch 完整版 | CC Switch Lite (轻量版) |
+| :--- | :---: | :---: |
+| **用量与费用统计看板** | ✅ | ✅ |
+| **AI 编程工具日志自动同步** | ✅ | ✅ |
+| **模型价格表及 models.dev 同步** | ✅ | ✅ |
+| **本地 HTTP 代理服务 (Axum/Hyper)** | ✅ (占用较多内存/网络端口) | ❌ 彻底移除 |
+| **供应商配置与热切换** | ✅ | ❌ 彻底移除 |
+| **MCP 服务器管理与同步** | ✅ | ❌ 彻底移除 |
+| **Prompt 预设与注入管理** | ✅ | ❌ 彻底移除 |
+| **Skill 技能包管理** | ✅ | ❌ 彻底移除 |
+| **会话历史阅读器与断点恢复** | ✅ | ❌ 彻底移除 |
+| **第三方统一登录/OAuth 授权中心** | ✅ | ❌ 彻底移除 |
+
+> **数据无缝兼容**：Lite 版启动时会自动优先连接已有的 `~/.cc-switch/cc-switch.db`（若存在），完整继承既有历史用量与定价配置；若未安装过完整版，则保存在独立目录 `~/.cc-switch-lite/cc-switch.db`。
+
+---
+
+## 🛠️ 技术栈与依赖架构
+
+- **前端**：
+  - React 18 + TypeScript + Vite 7
+  - TailwindCSS + Radix UI
+  - Recharts (高交互图表)
+  - i18next (多语言)
+- **后端**：
+  - Tauri v2 (极轻量系统 WebView)
+  - Rust 1.85+ (极低内存与 CPU 占用)
+  - Rusqlite (内置嵌入式 SQLite，支持 WAL 与高速聚合)
+
+---
+
+## 📦 开发与构建
+
+### 1. 安装前端依赖
+```bash
+pnpm install
+```
+
+### 2. 编译并运行开发模式
+```bash
+pnpm tauri dev
+```
+
+### 3. 类型检查与前端编译
+```bash
+pnpm run typecheck
+pnpm run build:renderer
+```
+
+### 4. 运行后端单元测试 (290+ 自动化测试)
+```bash
+cd src-tauri
+cargo test --lib
+```
+
+### 5. 构建正式发布包
+```bash
+pnpm tauri build
+```
+编译产物将输出在 `src-tauri/target/release/` 目录下。
+
