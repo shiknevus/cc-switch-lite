@@ -101,7 +101,15 @@ fn collect_gemini_session_files(gemini_dir: &Path) -> Vec<PathBuf> {
     let mut seen_paths = std::collections::HashSet::new();
 
     // 1. 传统 Gemini CLI 会话 JSON(L) 文件: tmp/<project_hash>/chats/session-*.json(l)
-    let tmp_dir = gemini_dir.join("tmp");
+    // antigravity-cli 和经典 CLI 可能同时存在。选中前者时，经典会话仍在
+    // 上一级 ~/.gemini/tmp，不能只扫当前根目录。
+    let mut tmp_dirs = vec![gemini_dir.join("tmp")];
+    if gemini_dir.file_name().and_then(|name| name.to_str()) == Some("antigravity-cli") {
+        if let Some(parent) = gemini_dir.parent() {
+            tmp_dirs.push(parent.join("tmp"));
+        }
+    }
+    for tmp_dir in tmp_dirs {
     if tmp_dir.is_dir() {
         if let Ok(project_dirs) = fs::read_dir(&tmp_dir) {
             for entry in project_dirs.flatten() {
@@ -128,6 +136,7 @@ fn collect_gemini_session_files(gemini_dir: &Path) -> Vec<PathBuf> {
                 }
             }
         }
+    }
     }
 
     // 2. Antigravity / agy 会话日志: brain/<conversation_id>/.system_generated/logs/transcript.jsonl
@@ -775,6 +784,23 @@ mod tests {
     fn test_collect_gemini_session_files_nonexistent() {
         let files = collect_gemini_session_files(Path::new("/nonexistent/path"));
         assert!(files.is_empty());
+    }
+
+    #[test]
+    fn collects_classic_chats_beside_antigravity_cli() {
+        let root = tempfile::tempdir().expect("temp");
+        let chats = root.path().join("tmp").join("proj").join("chats");
+        std::fs::create_dir_all(&chats).expect("chats");
+        let session = chats.join("session-classic.json");
+        std::fs::write(&session, "{}").expect("session");
+        let agy = root.path().join("antigravity-cli");
+        std::fs::create_dir_all(&agy).expect("agy");
+
+        let files = collect_gemini_session_files(&agy);
+        assert!(
+            files.iter().any(|path| path.ends_with("session-classic.json")),
+            "classic ~/.gemini/tmp chats must still be scanned when antigravity-cli exists"
+        );
     }
 
     #[test]

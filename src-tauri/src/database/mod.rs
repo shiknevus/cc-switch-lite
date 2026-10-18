@@ -3,6 +3,7 @@
 pub(crate) mod backup;
 pub mod dao;
 pub(crate) mod schema;
+mod sql_fns;
 
 use crate::config::get_app_config_dir;
 use crate::error::AppError;
@@ -41,6 +42,7 @@ impl Database {
              PRAGMA foreign_keys = ON;
              PRAGMA busy_timeout = 5000;",
         )?;
+        sql_fns::register_decimal_functions(&conn)?;
 
         let db = Self {
             conn: Mutex::new(conn),
@@ -55,6 +57,7 @@ impl Database {
     #[cfg(test)]
     pub fn memory() -> Result<Self, AppError> {
         let conn = Connection::open_in_memory()?;
+        sql_fns::register_decimal_functions(&conn)?;
         let db = Self {
             conn: Mutex::new(conn),
             log_count_cache: Mutex::new(None),

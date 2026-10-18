@@ -24,6 +24,95 @@ fn ensure_column(
     Ok(())
 }
 
+/// Old rollup tables used a shorter primary key. Adding columns does not
+/// change that key, so request_model / pricing_model would collapse together.
+fn rebuild_rollup_primary_key(conn: &Connection) -> Result<(), AppError> {
+    let mut stmt = conn
+        .prepare("SELECT name, pk FROM pragma_table_info('usage_daily_rollups')")
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    let rows = stmt
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    let mut saw_row = false;
+    let mut primary_key = Vec::new();
+    for row in rows {
+        saw_row = true;
+        let (name, ordinal) = row.map_err(|error| AppError::Database(error.to_string()))?;
+        if ordinal > 0 {
+            primary_key.push(name);
+        }
+    }
+    if !saw_row {
+        return Ok(());
+    }
+    const NEEDED: [&str; 6] = [
+        "date",
+        "app_type",
+        "provider_id",
+        "model",
+        "request_model",
+        "pricing_model",
+    ];
+    if NEEDED
+        .iter()
+        .all(|column| primary_key.iter().any(|name| name == column))
+    {
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "CREATE TABLE usage_daily_rollups__rebuild (
+            date TEXT NOT NULL,
+            app_type TEXT NOT NULL,
+            provider_id TEXT NOT NULL,
+            model TEXT NOT NULL,
+            request_model TEXT NOT NULL DEFAULT '',
+            pricing_model TEXT NOT NULL DEFAULT '',
+            request_count INTEGER NOT NULL DEFAULT 0,
+            success_count INTEGER NOT NULL DEFAULT 0,
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+            input_token_semantics INTEGER NOT NULL DEFAULT 0,
+            total_cost_usd TEXT NOT NULL DEFAULT '0',
+            avg_latency_ms INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (date, app_type, provider_id, model, request_model, pricing_model)
+        );
+        INSERT INTO usage_daily_rollups__rebuild (
+            date, app_type, provider_id, model, request_model, pricing_model,
+            request_count, success_count, input_tokens, output_tokens,
+            cache_read_tokens, cache_creation_tokens, input_token_semantics,
+            total_cost_usd, avg_latency_ms
+        )
+        SELECT
+            date,
+            app_type,
+            provider_id,
+            model,
+            COALESCE(request_model, ''),
+            COALESCE(pricing_model, ''),
+            COALESCE(SUM(request_count), 0),
+            COALESCE(SUM(success_count), 0),
+            COALESCE(SUM(input_tokens), 0),
+            COALESCE(SUM(output_tokens), 0),
+            COALESCE(SUM(cache_read_tokens), 0),
+            COALESCE(SUM(cache_creation_tokens), 0),
+            COALESCE(MAX(input_token_semantics), 0),
+            CAST(COALESCE(decimal_sum(total_cost_usd), 0) AS TEXT),
+            CASE WHEN COALESCE(SUM(request_count), 0) > 0
+                THEN SUM(avg_latency_ms * request_count) / SUM(request_count)
+                ELSE 0 END
+        FROM usage_daily_rollups
+        GROUP BY date, app_type, provider_id, model,
+                 COALESCE(request_model, ''), COALESCE(pricing_model, '');
+        DROP TABLE usage_daily_rollups;
+        ALTER TABLE usage_daily_rollups__rebuild RENAME TO usage_daily_rollups;",
+    )
+    .map_err(|error| AppError::Database(format!("重建 usage_daily_rollups 主键失败: {error}")))?;
+    Ok(())
+}
+
 impl Database {
     pub(crate) fn create_tables(&self) -> Result<(), AppError> {
         let conn = lock_conn!(self.conn);
@@ -89,36 +178,6 @@ impl Database {
                 created_at INTEGER NOT NULL,
                 data_source TEXT NOT NULL DEFAULT 'proxy'
             )",
-            [],
-        )
-        .map_err(|e| AppError::Database(e.to_string()))?;
-
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_request_logs_provider ON proxy_request_logs(provider_id, app_type)",
-            [],
-        )
-        .map_err(|e| AppError::Database(e.to_string()))?;
-
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_request_logs_created_at ON proxy_request_logs(created_at)",
-            [],
-        )
-        .map_err(|e| AppError::Database(e.to_string()))?;
-
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_request_logs_model ON proxy_request_logs(model)",
-            [],
-        )
-        .map_err(|e| AppError::Database(e.to_string()))?;
-
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_request_logs_session ON proxy_request_logs(session_id)",
-            [],
-        )
-        .map_err(|e| AppError::Database(e.to_string()))?;
-
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_request_logs_status ON proxy_request_logs(status_code)",
             [],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
@@ -193,15 +252,44 @@ impl Database {
 
         Self::migrate_schema(conn)?;
 
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_request_logs_provider ON proxy_request_logs(provider_id, app_type)",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_request_logs_created_at ON proxy_request_logs(created_at)",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_request_logs_model ON proxy_request_logs(model)",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_request_logs_session ON proxy_request_logs(session_id)",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_request_logs_status ON proxy_request_logs(status_code)",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
         Ok(())
     }
 
     fn migrate_schema(conn: &Connection) -> Result<(), AppError> {
-        let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if version >= SCHEMA_VERSION {
-            return Ok(());
-        }
-
+        // Column adds are idempotent. A shared full-version database can already
+        // have user_version >= 1 while still missing columns Lite queries, so the
+        // version number must not skip this pass. Only raise user_version when it
+        // is older than ours; never lower a newer version from the full app.
         conn.execute_batch("SAVEPOINT schema_migration")?;
         let result = (|| {
             // These columns were added after the first Lite/full-version databases.
@@ -263,6 +351,33 @@ impl Database {
                 "data_source",
                 "TEXT NOT NULL DEFAULT 'proxy'",
             )?;
+            ensure_column(conn, "proxy_request_logs", "first_token_ms", "INTEGER")?;
+            ensure_column(conn, "proxy_request_logs", "duration_ms", "INTEGER")?;
+            ensure_column(conn, "proxy_request_logs", "error_message", "TEXT")?;
+            ensure_column(
+                conn,
+                "proxy_request_logs",
+                "input_cost_usd",
+                "TEXT NOT NULL DEFAULT '0'",
+            )?;
+            ensure_column(
+                conn,
+                "proxy_request_logs",
+                "output_cost_usd",
+                "TEXT NOT NULL DEFAULT '0'",
+            )?;
+            ensure_column(
+                conn,
+                "proxy_request_logs",
+                "cache_read_cost_usd",
+                "TEXT NOT NULL DEFAULT '0'",
+            )?;
+            ensure_column(
+                conn,
+                "proxy_request_logs",
+                "total_cost_usd",
+                "TEXT NOT NULL DEFAULT '0'",
+            )?;
 
             ensure_column(
                 conn,
@@ -295,7 +410,68 @@ impl Database {
                 "input_token_semantics",
                 "INTEGER NOT NULL DEFAULT 0",
             )?;
+            ensure_column(
+                conn,
+                "usage_daily_rollups",
+                "request_count",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+            ensure_column(
+                conn,
+                "usage_daily_rollups",
+                "success_count",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+            ensure_column(
+                conn,
+                "usage_daily_rollups",
+                "input_tokens",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+            ensure_column(
+                conn,
+                "usage_daily_rollups",
+                "output_tokens",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+            ensure_column(
+                conn,
+                "usage_daily_rollups",
+                "cache_read_tokens",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+            ensure_column(
+                conn,
+                "usage_daily_rollups",
+                "cache_creation_tokens",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+            ensure_column(
+                conn,
+                "usage_daily_rollups",
+                "total_cost_usd",
+                "TEXT NOT NULL DEFAULT '0'",
+            )?;
+            ensure_column(
+                conn,
+                "usage_daily_rollups",
+                "avg_latency_ms",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+            rebuild_rollup_primary_key(conn)?;
 
+            ensure_column(
+                conn,
+                "session_log_sync",
+                "last_line_offset",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+            ensure_column(
+                conn,
+                "session_log_sync",
+                "last_synced_at",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
             ensure_column(conn, "session_log_sync", "last_byte_offset", "INTEGER")?;
             ensure_column(
                 conn,
@@ -309,7 +485,10 @@ impl Database {
                  ON proxy_request_logs(data_source, created_at)",
                 [],
             )?;
-            conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
+            let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+            if version < SCHEMA_VERSION {
+                conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
+            }
             Ok::<(), AppError>(())
         })();
 
@@ -2318,5 +2497,103 @@ impl Database {
                 Err(error)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+
+    #[test]
+    fn migrate_adds_missing_columns_when_user_version_is_already_newer() {
+        let conn = Connection::open_in_memory().expect("memory");
+        crate::database::sql_fns::register_decimal_functions(&conn).expect("decimal fns");
+        conn.execute_batch(
+            "CREATE TABLE providers (
+                id TEXT NOT NULL,
+                app_type TEXT NOT NULL,
+                name TEXT NOT NULL,
+                settings_config TEXT NOT NULL DEFAULT '{}',
+                PRIMARY KEY (id, app_type)
+            );
+            CREATE TABLE proxy_request_logs (
+                request_id TEXT PRIMARY KEY,
+                provider_id TEXT NOT NULL,
+                app_type TEXT NOT NULL,
+                model TEXT NOT NULL,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                latency_ms INTEGER NOT NULL,
+                status_code INTEGER NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE TABLE model_pricing (
+                model_id TEXT PRIMARY KEY,
+                display_name TEXT NOT NULL,
+                input_cost_per_million TEXT NOT NULL,
+                output_cost_per_million TEXT NOT NULL
+            );
+            CREATE TABLE usage_daily_rollups (
+                date TEXT NOT NULL,
+                app_type TEXT NOT NULL,
+                provider_id TEXT NOT NULL,
+                model TEXT NOT NULL,
+                request_count INTEGER NOT NULL DEFAULT 0,
+                success_count INTEGER NOT NULL DEFAULT 0,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+                total_cost_usd TEXT NOT NULL DEFAULT '0',
+                avg_latency_ms INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (date, app_type, provider_id, model)
+            );
+            CREATE TABLE session_log_sync (
+                file_path TEXT PRIMARY KEY,
+                last_modified INTEGER NOT NULL
+            );
+            CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT);
+            PRAGMA user_version = 9;",
+        )
+        .expect("legacy schema");
+
+        Database::create_tables_on_conn(&conn).expect("migrate");
+
+        let has_column = |table: &str, column: &str| -> bool {
+            conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2)",
+                rusqlite::params![table, column],
+                |row| row.get(0),
+            )
+            .expect("column lookup")
+        };
+        assert!(has_column("proxy_request_logs", "first_token_ms"));
+        assert!(has_column("proxy_request_logs", "data_source"));
+        assert!(has_column("session_log_sync", "last_byte_offset"));
+
+        let pk: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('usage_daily_rollups') WHERE pk > 0 ORDER BY pk")
+            .expect("pk stmt")
+            .query_map([], |row| row.get(0))
+            .expect("pk rows")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("pk");
+        assert_eq!(
+            pk,
+            vec![
+                "date",
+                "app_type",
+                "provider_id",
+                "model",
+                "request_model",
+                "pricing_model",
+            ]
+        );
+
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("version");
+        assert_eq!(version, 9, "a newer shared-database version must stay put");
     }
 }

@@ -68,7 +68,7 @@ import { getUsageProviderLabel, usageProviderTitle } from "./providerLabel";
 
 // 用量页打开时扫描会话日志的间隔；旧版存过的「关」(0) 等无效值回落到默认
 const DEFAULT_REFRESH_INTERVAL_MS = 60000;
-const REFRESH_INTERVAL_OPTIONS_MS = [1000, 5000, 10000, 30000, 60000] as const;
+const REFRESH_INTERVAL_OPTIONS_MS = [5000, 10000, 30000, 60000] as const;
 type RefreshIntervalOption = (typeof REFRESH_INTERVAL_OPTIONS_MS)[number];
 
 const isRefreshIntervalOption = (
@@ -76,8 +76,13 @@ const isRefreshIntervalOption = (
 ): value is RefreshIntervalOption =>
   REFRESH_INTERVAL_OPTIONS_MS.includes(value as RefreshIntervalOption);
 
-const normalizeRefreshInterval = (value: number | undefined) =>
-  isRefreshIntervalOption(value) ? value : DEFAULT_REFRESH_INTERVAL_MS;
+const MIN_REFRESH_INTERVAL_MS = 5000;
+const normalizeRefreshInterval = (value: number | undefined) => {
+  if (value != null && value > 0 && value < MIN_REFRESH_INTERVAL_MS) {
+    return MIN_REFRESH_INTERVAL_MS;
+  }
+  return isRefreshIntervalOption(value) ? value : DEFAULT_REFRESH_INTERVAL_MS;
+};
 
 const STATUS_CODE_OPTIONS = [200, 400, 401, 429, 500] as const;
 

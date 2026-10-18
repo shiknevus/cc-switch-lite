@@ -80,13 +80,53 @@ pub fn get_opencode_db_path() -> PathBuf {
     get_opencode_data_dir().join("opencode.db")
 }
 
-fn get_opencode_data_dir() -> PathBuf {
+fn opencode_data_dir_candidates() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
     if let Ok(xdg_data) = std::env::var("XDG_DATA_HOME") {
-        if !xdg_data.is_empty() {
-            return PathBuf::from(xdg_data).join("opencode");
+        let trimmed = xdg_data.trim();
+        if !trimmed.is_empty() {
+            dirs.push(PathBuf::from(trimmed).join("opencode"));
         }
     }
-    get_home_dir().join(".local").join("share").join("opencode")
+    let home = get_home_dir();
+    dirs.push(home.join(".local").join("share").join("opencode"));
+    // OpenCode follows xdg-basedir: Windows -> %LOCALAPPDATA%\opencode,
+    // macOS -> ~/Library/Application Support/opencode.
+    if let Some(local) = dirs::data_local_dir() {
+        dirs.push(local.join("opencode"));
+    }
+    if let Some(data) = dirs::data_dir() {
+        dirs.push(data.join("opencode"));
+    }
+    #[cfg(target_os = "macos")]
+    dirs.push(
+        home.join("Library")
+            .join("Application Support")
+            .join("opencode"),
+    );
+
+    let mut unique = Vec::new();
+    for dir in dirs {
+        if !unique.iter().any(|existing: &PathBuf| existing == &dir) {
+            unique.push(dir);
+        }
+    }
+    unique
+}
+
+fn get_opencode_data_dir() -> PathBuf {
+    let candidates = opencode_data_dir_candidates();
+    for dir in &candidates {
+        if dir.join("opencode.db").is_file() {
+            return dir.clone();
+        }
+    }
+    candidates.into_iter().next().unwrap_or_else(|| {
+        get_home_dir()
+            .join(".local")
+            .join("share")
+            .join("opencode")
+    })
 }
 
 pub fn get_pi_dir() -> PathBuf {

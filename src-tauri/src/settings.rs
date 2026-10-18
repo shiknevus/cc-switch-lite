@@ -74,39 +74,47 @@ impl Default for AppSettings {
     }
 }
 
-pub fn get_settings_from_db(db: &Database) -> AppSettings {
+fn parse_stored_bool(value: &str, default: bool) -> bool {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" => true,
+        "false" | "0" | "no" => false,
+        _ => default,
+    }
+}
+
+pub fn get_settings_from_db(db: &Database) -> Result<AppSettings, AppError> {
     let mut settings = AppSettings::default();
 
-    if let Ok(Some(lang)) = db.get_setting("language") {
+    if let Some(lang) = db.get_setting("language")? {
         settings.language = lang;
     }
-    if let Ok(Some(theme)) = db.get_setting("theme") {
+    if let Some(theme) = db.get_setting("theme")? {
         settings.theme = theme;
     }
-    if let Ok(Some(interval)) = db.get_setting("usage_dashboard_refresh_interval_ms") {
+    if let Some(interval) = db.get_setting("usage_dashboard_refresh_interval_ms")? {
         if let Ok(val) = interval.parse::<u64>() {
             settings.usage_dashboard_refresh_interval_ms = val;
         }
     }
-    if let Ok(Some(auto_sync)) = db.get_setting("session_auto_sync_enabled") {
-        settings.session_auto_sync_enabled = auto_sync != "false";
+    if let Some(auto_sync) = db.get_setting("session_auto_sync_enabled")? {
+        settings.session_auto_sync_enabled = parse_stored_bool(&auto_sync, true);
     }
-    if let Ok(Some(minimize)) = db.get_setting("minimize_to_tray_on_close") {
-        settings.minimize_to_tray_on_close = minimize != "false";
+    if let Some(minimize) = db.get_setting("minimize_to_tray_on_close")? {
+        settings.minimize_to_tray_on_close = parse_stored_bool(&minimize, true);
     }
-    if let Ok(Some(launch)) = db.get_setting("launch_on_startup") {
-        settings.launch_on_startup = launch != "false";
+    if let Some(launch) = db.get_setting("launch_on_startup")? {
+        settings.launch_on_startup = parse_stored_bool(&launch, false);
     }
-    if let Ok(Some(silent)) = db.get_setting("silent_startup") {
-        settings.silent_startup = silent != "false";
+    if let Some(silent) = db.get_setting("silent_startup")? {
+        settings.silent_startup = parse_stored_bool(&silent, false);
     }
-    if let Ok(Some(display_json)) = db.get_setting("usage_display") {
+    if let Some(display_json) = db.get_setting("usage_display")? {
         if let Ok(display) = serde_json::from_str::<UsageDisplaySettings>(&display_json) {
             settings.usage_display = Some(display);
         }
     }
 
-    settings
+    Ok(settings)
 }
 
 pub fn save_settings_to_db(db: &Database, settings: &AppSettings) -> Result<(), AppError> {
@@ -176,7 +184,7 @@ mod tests {
     #[test]
     fn minimize_to_tray_defaults_on_for_existing_db() {
         let db = Database::memory().expect("内存库");
-        assert!(get_settings_from_db(&db).minimize_to_tray_on_close);
+        assert!(get_settings_from_db(&db).expect("读取设置").minimize_to_tray_on_close);
     }
 
     /// 开关关掉后要能存下来、读回来，否则用户取消勾选后关窗仍然不退出。
@@ -187,11 +195,11 @@ mod tests {
         let mut settings = AppSettings::default();
         settings.minimize_to_tray_on_close = false;
         save_settings_to_db(&db, &settings).expect("保存设置");
-        assert!(!get_settings_from_db(&db).minimize_to_tray_on_close);
+        assert!(!get_settings_from_db(&db).expect("读取设置").minimize_to_tray_on_close);
 
         settings.minimize_to_tray_on_close = true;
         save_settings_to_db(&db, &settings).expect("保存设置");
-        assert!(get_settings_from_db(&db).minimize_to_tray_on_close);
+        assert!(get_settings_from_db(&db).expect("读取设置").minimize_to_tray_on_close);
     }
 
     /// 前端传 camelCase、库里存 "true"/"false" 字符串，两边都要认。
@@ -200,7 +208,7 @@ mod tests {
         let db = Database::memory().expect("内存库");
         db.set_setting("minimize_to_tray_on_close", "false")
             .expect("写设置");
-        assert!(!get_settings_from_db(&db).minimize_to_tray_on_close);
+        assert!(!get_settings_from_db(&db).expect("读取设置").minimize_to_tray_on_close);
 
         let parsed: AppSettings =
             serde_json::from_str(r#"{"minimizeToTrayOnClose":false}"#).expect("解析设置");
@@ -211,7 +219,7 @@ mod tests {
     #[test]
     fn auto_launch_defaults_off() {
         let db = Database::memory().expect("内存库");
-        let settings = get_settings_from_db(&db);
+        let settings = get_settings_from_db(&db).expect("读取设置");
         assert!(!settings.launch_on_startup);
         assert!(!settings.silent_startup);
     }
@@ -226,7 +234,7 @@ mod tests {
         settings.silent_startup = true;
         save_settings_to_db(&db, &settings).expect("保存设置");
 
-        let loaded = get_settings_from_db(&db);
+        let loaded = get_settings_from_db(&db).expect("读取设置");
         assert!(loaded.launch_on_startup);
         assert!(loaded.silent_startup);
 
@@ -234,8 +242,18 @@ mod tests {
         settings.silent_startup = false;
         save_settings_to_db(&db, &settings).expect("保存设置");
 
-        let loaded = get_settings_from_db(&db);
+        let loaded = get_settings_from_db(&db).expect("读取设置");
         assert!(!loaded.launch_on_startup);
         assert!(!loaded.silent_startup);
+    }
+
+    #[test]
+    fn stored_bool_accepts_zero_and_ignores_unknown_text() {
+        let db = Database::memory().expect("内存库");
+        db.set_setting("launch_on_startup", "0").expect("写设置");
+        db.set_setting("silent_startup", "maybe").expect("写设置");
+        let settings = get_settings_from_db(&db).expect("读取设置");
+        assert!(!settings.launch_on_startup);
+        assert!(!settings.silent_startup);
     }
 }

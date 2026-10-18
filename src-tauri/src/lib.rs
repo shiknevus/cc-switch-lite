@@ -43,6 +43,17 @@ pub fn is_silent_startup() -> bool {
 /// 路径并带上正确的 `--silent`，修掉升级换目录、或改了静默开关但启动项没跟上
 /// 的情况。反过来，设置里写着要自启、系统里却没有时**不**重新登记——那多半是
 /// 用户自己在任务管理器里禁用了，替他加回来只会打架。
+/// 剪枝和会话扫描共用同一把锁，避免一边写入历史行、一边把 30 天前的明细删掉。
+async fn prune_usage_logs(db: Arc<Database>) {
+    let _guard = services::session_usage::session_sync_mutex().lock().await;
+    let _ = tauri::async_runtime::spawn_blocking(move || match db.rollup_and_prune(30) {
+        Ok(pruned) if pruned > 0 => log::info!("历史用量日志已聚合剪枝: {pruned} 条"),
+        Ok(_) => {}
+        Err(error) => log::warn!("历史用量日志聚合与清理失败: {error}"),
+    })
+    .await;
+}
+
 fn reconcile_auto_launch(settings: &settings::AppSettings) {
     if !settings.launch_on_startup {
         return;
@@ -75,8 +86,14 @@ pub fn run() {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let minimize_to_tray = window
                     .try_state::<AppState>()
-                    .map(|state| settings::get_settings_from_db(&state.db).minimize_to_tray_on_close)
-                    .unwrap_or(false);
+                    .map(|state| match settings::get_settings_from_db(&state.db) {
+                        Ok(settings) => settings.minimize_to_tray_on_close,
+                        Err(error) => {
+                            log::warn!("读取关窗设置失败，保持在托盘: {error}");
+                            true
+                        }
+                    })
+                    .unwrap_or(true);
 
                 if minimize_to_tray {
                     api.prevent_close();
@@ -150,13 +167,32 @@ pub fn run() {
 
             usage_events::init(app.handle().clone());
 
-            let db = Arc::new(Database::init().expect("数据库初始化失败"));
+            let db = match Database::init() {
+                Ok(db) => Arc::new(db),
+                Err(error) => {
+                    let message = format!("数据库初始化失败: {error}");
+                    log::error!("{message}");
+                    use tauri_plugin_dialog::DialogExt;
+                    let _ = app
+                        .dialog()
+                        .message(&message)
+                        .title("CC Switch Lite")
+                        .blocking_show();
+                    return Err(message.into());
+                }
+            };
             app.manage(AppState::new(db.clone()));
 
             // 静默启动要同时满足两点：设置里开着静默，且本次确实由开机自启拉起来
             // （命令行带 --silent）。这样用户手动双击图标时总能看见窗口，不会因为
             // 开着静默就再也打不开界面。
-            let settings = settings::get_settings_from_db(&db);
+            let settings = match settings::get_settings_from_db(&db) {
+                Ok(settings) => settings,
+                Err(error) => {
+                    log::error!("读取设置失败，本次使用默认值且不会写回: {error}");
+                    settings::AppSettings::default()
+                }
+            };
             let silent = settings.silent_startup && auto_launch::started_with_silent_arg();
             SILENT_STARTUP.store(silent, Ordering::Relaxed);
 
@@ -185,7 +221,10 @@ pub fn run() {
             let sync_db = db.clone();
             tauri::async_runtime::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(750)).await;
-                if !settings::get_settings_from_db(&sync_db).session_auto_sync_enabled {
+                let auto_sync = settings::get_settings_from_db(&sync_db)
+                    .map(|settings| settings.session_auto_sync_enabled)
+                    .unwrap_or(false);
+                if !auto_sync {
                     log::info!("startup session scan skipped because automatic sync is disabled");
                     return;
                 }
@@ -200,37 +239,32 @@ pub fn run() {
             let prune_db = db.clone();
             tauri::async_runtime::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                let _ = tauri::async_runtime::spawn_blocking(move || {
-                    match prune_db.rollup_and_prune(30) {
-                        Ok(pruned) if pruned > 0 => log::info!("历史用量日志已聚合剪枝: {pruned} 条"),
-                        Ok(_) => {}
-                        Err(e) => log::warn!("历史用量日志聚合与清理失败: {e}"),
-                    }
-                })
-                .await;
+                prune_usage_logs(prune_db).await;
             });
 
             let ticker_db = db.clone();
             tauri::async_runtime::spawn(async move {
-                // 将高频 1000ms 查库降频至 5000ms，显著降低常驻托盘时的无谓 SQLite 轮询开销
+                // 错过的 tick 直接丢掉。一次扫描要是超过间隔，补发会连着打多次设置查询。
                 let mut interval = tokio::time::interval(std::time::Duration::from_millis(5000));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 let mut last_sync = std::time::Instant::now();
                 let mut last_prune = std::time::Instant::now();
                 loop {
                     interval.tick().await;
 
-                    // 每日在后台执行一次历史用量聚合剪枝
+                    // 每日在后台执行一次历史用量聚合剪枝，并和会话扫描共用同一把锁。
                     if last_prune.elapsed().as_secs() >= 86400 {
                         last_prune = std::time::Instant::now();
-                        let p_db = ticker_db.clone();
-                        let _ = tauri::async_runtime::spawn_blocking(move || {
-                            if let Err(e) = p_db.rollup_and_prune(30) {
-                                log::warn!("周期性历史日志剪枝失败: {e}");
-                            }
-                        });
+                        prune_usage_logs(ticker_db.clone()).await;
                     }
 
-                    let settings = settings::get_settings_from_db(&ticker_db);
+                    let settings = match settings::get_settings_from_db(&ticker_db) {
+                        Ok(settings) => settings,
+                        Err(error) => {
+                            log::warn!("读取同步设置失败，跳过本轮: {error}");
+                            continue;
+                        }
+                    };
                     if settings.session_auto_sync_enabled {
                         let interval_ms = settings.usage_dashboard_refresh_interval_ms.max(5000);
                         if last_sync.elapsed().as_millis() as u64 >= interval_ms {

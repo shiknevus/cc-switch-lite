@@ -485,7 +485,7 @@ pub(crate) fn effective_usage_log_filter(log_alias: &str) -> String {
         dedup_app_type_match_sql("proxy_dedup.app_type", &format!("{log_alias}.app_type"));
     format!(
         "NOT (
-            {data_source} IN ('session_log', 'codex_session', 'gemini_session', 'opencode_session', 'dsh_session')
+            {data_source} IN ({DEDUP_SESSION_SOURCES_SQL})
             AND EXISTS (
                 SELECT 1
                 FROM proxy_request_logs proxy_dedup
@@ -523,7 +523,7 @@ pub(crate) fn effective_usage_log_filter(log_alias: &str) -> String {
 
 /// 参与跨源去重的会话日志来源（和 [`effective_usage_log_filter`] 同口径）。
 const DEDUP_SESSION_SOURCES_SQL: &str =
-    "'session_log', 'codex_session', 'gemini_session', 'opencode_session', 'dsh_session'";
+    "'session_log', 'codex_session', 'gemini_session', 'opencode_session', 'dsh_session', 'grok_session', 'pi_session', 'mcode_session'";
 
 /// Dashboard 读路径用的去重条件：语义和 [`effective_usage_log_filter`] 完全一致，
 /// 只是先看时间窗口里两类日志各有多少，再挑便宜的写法。
@@ -1040,7 +1040,7 @@ impl Database {
             FROM
                 (SELECT
                     COUNT(*) as total_requests,
-                    COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as total_cost,
+                    COALESCE(decimal_sum(l.total_cost_usd), 0) as total_cost,
                     COALESCE(SUM({fresh_input_detail}), 0) as total_input_tokens,
                     COALESCE(SUM(l.output_tokens), 0) as total_output_tokens,
                     COALESCE(SUM(l.cache_creation_tokens), 0) as total_cache_creation_tokens,
@@ -1049,7 +1049,7 @@ impl Database {
                  FROM proxy_request_logs l {detail_join} {where_clause}) d,
                 (SELECT
                     COALESCE(SUM(r.request_count), 0) as total_requests,
-                    COALESCE(SUM(CAST(r.total_cost_usd AS REAL)), 0) as total_cost,
+                    COALESCE(decimal_sum(r.total_cost_usd), 0) as total_cost,
                     COALESCE(SUM({fresh_input_rollup}), 0) as total_input_tokens,
                     COALESCE(SUM(r.output_tokens), 0) as total_output_tokens,
                     COALESCE(SUM(r.cache_creation_tokens), 0) as total_cache_creation_tokens,
@@ -1085,7 +1085,7 @@ impl Database {
         let sql = format!(
             "SELECT
                 COUNT(*),
-                COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0),
+                COALESCE(decimal_sum(l.total_cost_usd), 0),
                 COALESCE(SUM({fresh_input}), 0),
                 COALESCE(SUM(l.output_tokens), 0),
                 COALESCE(SUM(l.cache_creation_tokens), 0),
@@ -1191,7 +1191,7 @@ impl Database {
             FROM (
                 SELECT {detail_app_type} as app_type,
                     COUNT(*) as req_count,
-                    COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as cost,
+                    COALESCE(decimal_sum(l.total_cost_usd), 0) as cost,
                     COALESCE(SUM({fresh_input_detail}), 0) as input_t,
                     COALESCE(SUM(l.output_tokens), 0) as output_t,
                     COALESCE(SUM(l.cache_creation_tokens), 0) as cache_create_t,
@@ -1202,7 +1202,7 @@ impl Database {
                 UNION ALL
                 SELECT {rollup_app_type} as app_type,
                     COALESCE(SUM(r.request_count), 0),
-                    COALESCE(SUM(CAST(r.total_cost_usd AS REAL)), 0),
+                    COALESCE(decimal_sum(r.total_cost_usd), 0),
                     COALESCE(SUM({fresh_input_rollup}), 0),
                     COALESCE(SUM(r.output_tokens), 0),
                     COALESCE(SUM(r.cache_creation_tokens), 0),
@@ -1337,7 +1337,7 @@ impl Database {
                 "SELECT
                     CAST((l.created_at - ?1) / ?3 AS INTEGER) as bucket_idx,
                     COUNT(*) as request_count,
-                    COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as total_cost,
+                    COALESCE(decimal_sum(l.total_cost_usd), 0) as total_cost,
                     COALESCE(SUM({fresh_input} + l.output_tokens), 0) as total_tokens,
                     COALESCE(SUM({fresh_input}), 0) as total_input_tokens,
                     COALESCE(SUM(l.output_tokens), 0) as total_output_tokens,
@@ -1451,7 +1451,7 @@ impl Database {
             "SELECT
                 date(l.created_at, 'unixepoch', 'localtime') as bucket_date,
                 COUNT(*) as request_count,
-                COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as total_cost,
+                COALESCE(decimal_sum(l.total_cost_usd), 0) as total_cost,
                 COALESCE(SUM({fresh_input} + l.output_tokens), 0) as total_tokens,
                 COALESCE(SUM({fresh_input}), 0) as total_input_tokens,
                 COALESCE(SUM(l.output_tokens), 0) as total_output_tokens,
@@ -1534,7 +1534,7 @@ impl Database {
             "SELECT
                 r.date,
                 COALESCE(SUM(r.request_count), 0),
-                COALESCE(SUM(CAST(r.total_cost_usd AS REAL)), 0),
+                COALESCE(decimal_sum(r.total_cost_usd), 0),
                 COALESCE(SUM({fresh_input_rollup} + r.output_tokens), 0),
                 COALESCE(SUM({fresh_input_rollup}), 0),
                 COALESCE(SUM(r.output_tokens), 0),
@@ -1804,7 +1804,7 @@ impl Database {
                     {detail_pname} as provider_name,
                     COUNT(*) as request_count,
                     COALESCE(SUM({real_total_detail}), 0) as total_tokens,
-                    COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as total_cost,
+                    COALESCE(decimal_sum(l.total_cost_usd), 0) as total_cost,
                     COALESCE(SUM(CASE WHEN l.status_code >= 200 AND l.status_code < 300 THEN 1 ELSE 0 END), 0) as success_count,
                     COALESCE(SUM(l.latency_ms), 0) as latency_sum,
                     COALESCE(SUM(CASE WHEN {speed_ok} THEN l.output_tokens ELSE 0 END), 0) as speed_output,
@@ -1820,7 +1820,7 @@ impl Database {
                     {rollup_pname} as provider_name,
                     COALESCE(SUM(r.request_count), 0),
                     COALESCE(SUM({real_total_rollup}), 0),
-                    COALESCE(SUM(CAST(r.total_cost_usd AS REAL)), 0),
+                    COALESCE(decimal_sum(r.total_cost_usd), 0),
                     COALESCE(SUM(r.success_count), 0),
                     COALESCE(SUM(r.avg_latency_ms * r.request_count), 0),
                     0,
@@ -2008,7 +2008,7 @@ impl Database {
                 SELECT {detail_model} as model,
                     COUNT(*) as request_count,
                     COALESCE(SUM({real_total_detail}), 0) as total_tokens,
-                    COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as total_cost,
+                    COALESCE(decimal_sum(l.total_cost_usd), 0) as total_cost,
                     COALESCE(SUM(CASE WHEN l.status_code >= 200 AND l.status_code < 300 THEN 1 ELSE 0 END), 0) as success_count,
                     COALESCE(SUM(CASE WHEN {speed_ok} THEN l.output_tokens ELSE 0 END), 0) as speed_output,
                     COALESCE(SUM(CASE WHEN {speed_ok} THEN l.latency_ms - l.first_token_ms ELSE 0 END), 0) as speed_gen_ms,
@@ -2022,7 +2022,7 @@ impl Database {
                 SELECT {rollup_model},
                     COALESCE(SUM(r.request_count), 0),
                     COALESCE(SUM({real_total_rollup}), 0),
-                    COALESCE(SUM(CAST(r.total_cost_usd AS REAL)), 0),
+                    COALESCE(decimal_sum(r.total_cost_usd), 0),
                     COALESCE(SUM(r.success_count), 0),
                     0,
                     0,

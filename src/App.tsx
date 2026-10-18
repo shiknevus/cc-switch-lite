@@ -50,15 +50,21 @@ export default function App() {
 
   useEffect(() => {
     syncLanguageFromSettings(settings?.language);
+  }, [settings?.language]);
+
+  // 只在后端设置变化时套用主题。setTheme 的身份会跟着当前主题变，
+  // 放进依赖会在保存写回前用旧设置把刚切换的主题盖回去。
+  useEffect(() => {
     const savedTheme = settings?.theme;
     if (
       savedTheme === "light" ||
       savedTheme === "dark" ||
       savedTheme === "system"
     ) {
-      if (savedTheme !== theme) setTheme(savedTheme);
+      setTheme(savedTheme);
     }
-  }, [settings?.language, settings?.theme, setTheme, theme]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings?.theme]);
 
   /**
    * 开关开机自启：先落系统（注册表 / 登录项），成了再存设置。

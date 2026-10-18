@@ -21,15 +21,22 @@ export function useUsageEventBridge() {
 
     (async () => {
       const off = await listen("usage-log-recorded", () => {
-        // invalidate 整个 usage 命名空间：summary / trends / providerStats /
-        // modelStats / logs 全部跟着重拉
         queryClient.invalidateQueries({ queryKey: usageKeys.all });
+      });
+      const offSync = await listen("usage-sync-finished", () => {
+        queryClient.invalidateQueries({
+          queryKey: [...usageKeys.all, "session-last-sync"],
+        });
       });
 
       if (disposed) {
         off();
+        offSync();
       } else {
-        unlisten = off;
+        unlisten = () => {
+          off();
+          offSync();
+        };
       }
     })();
 

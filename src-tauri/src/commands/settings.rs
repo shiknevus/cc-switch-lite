@@ -7,7 +7,8 @@ pub async fn get_settings(state: State<'_, AppState>) -> Result<AppSettings, Str
     let db = state.db.clone();
     tauri::async_runtime::spawn_blocking(move || get_settings_from_db(&db))
         .await
-        .map_err(|error| format!("读取设置任务失败: {error}"))
+        .map_err(|error| format!("读取设置任务失败: {error}"))?
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]

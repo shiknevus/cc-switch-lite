@@ -137,7 +137,7 @@ impl Database {
                 COALESCE(old.cache_read_tokens, 0) + new_cr,
                 COALESCE(old.cache_creation_tokens, 0) + new_cc,
                 {INPUT_TOKEN_SEMANTICS_FRESH},
-                CAST(COALESCE(CAST(old.total_cost_usd AS REAL), 0) + new_cost AS TEXT),
+                decimal_add(COALESCE(old.total_cost_usd, '0'), new_cost),
                 CASE WHEN COALESCE(old.request_count, 0) + new_req > 0
                     THEN (COALESCE(old.avg_latency_ms, 0) * COALESCE(old.request_count, 0)
                           + new_lat * new_req)
@@ -155,7 +155,7 @@ impl Database {
                     COALESCE(SUM(l.output_tokens), 0) as new_out,
                     COALESCE(SUM(l.cache_read_tokens), 0) as new_cr,
                     COALESCE(SUM(l.cache_creation_tokens), 0) as new_cc,
-                    COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as new_cost,
+                    COALESCE(decimal_sum(l.total_cost_usd), 0) as new_cost,
                     COALESCE(AVG(l.latency_ms), 0) as new_lat
                 FROM proxy_request_logs l
                 WHERE l.created_at < ?1 AND {effective_filter}

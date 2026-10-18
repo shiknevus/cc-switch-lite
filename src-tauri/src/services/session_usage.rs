@@ -174,6 +174,7 @@ pub fn sync_all_unlocked(db: &Database) -> SessionSyncResult {
     );
     notify_sync_result(&result);
     record_sync_completed(chrono::Utc::now().timestamp_millis());
+    crate::usage_events::notify_sync_finished();
     result
 }
 
@@ -1340,7 +1341,7 @@ pub fn get_data_source_breakdown(db: &Database) -> Result<Vec<DataSourceSummary>
     let effective_filter = effective_usage_log_filter("l");
     let sql = format!(
         "SELECT COALESCE(l.data_source, 'proxy') as ds, COUNT(*) as cnt,
-                COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as cost
+                COALESCE(decimal_sum(l.total_cost_usd), 0) as cost
          FROM proxy_request_logs l
          WHERE {effective_filter}
          GROUP BY ds

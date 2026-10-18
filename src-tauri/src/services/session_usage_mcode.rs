@@ -118,7 +118,7 @@ mod tests {
             2
         );
         let conn = db.conn.lock().unwrap();
-        let mut query = conn.prepare("SELECT model, SUM(CAST(total_cost_usd AS REAL)) FROM proxy_request_logs GROUP BY model ORDER BY model").unwrap();
+        let mut query = conn.prepare("SELECT model, decimal_sum(total_cost_usd) FROM proxy_request_logs GROUP BY model ORDER BY model").unwrap();
         let costs = query
             .query_map([], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))

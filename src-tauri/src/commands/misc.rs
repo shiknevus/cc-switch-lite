@@ -1,4 +1,16 @@
 use crate::error::AppError;
+use std::path::{Path, PathBuf};
+
+fn strip_verbatim(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    text.strip_prefix(r"\\?\")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| path.to_path_buf())
+}
+
+fn is_within(path: &Path, root: &Path) -> bool {
+    strip_verbatim(path).starts_with(strip_verbatim(root))
+}
 
 #[tauri::command]
 pub fn is_silent_startup() -> bool {
@@ -10,6 +22,16 @@ pub fn open_dir(path: String) -> Result<(), AppError> {
     let p = std::path::Path::new(&path);
     if !p.exists() {
         return Err(AppError::Message(format!("Path does not exist: {path}")));
+    }
+    let canonical = p
+        .canonicalize()
+        .map_err(|error| AppError::io(p, error))?;
+    let home = crate::config::get_home_dir();
+    let home_canonical = home.canonicalize().unwrap_or(home);
+    if !is_within(&canonical, &home_canonical) {
+        return Err(AppError::InvalidInput(
+            "只能打开用户主目录下的路径".to_string(),
+        ));
     }
     #[cfg(target_os = "windows")]
     {

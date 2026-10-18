@@ -25,7 +25,8 @@ const TRAY_TOOLTIP: &str = "CC Switch Lite";
 fn tray_texts(app: &AppHandle) -> (String, String, String) {
     let language = app
         .try_state::<AppState>()
-        .map(|state| crate::settings::get_settings_from_db(&state.db).language)
+        .and_then(|state| crate::settings::get_settings_from_db(&state.db).ok())
+        .map(|settings| settings.language)
         .unwrap_or_else(|| "zh".to_string());
 
     if language.starts_with("zh") {
@@ -33,6 +34,12 @@ fn tray_texts(app: &AppHandle) -> (String, String, String) {
             "显示主窗口".to_string(),
             "立即同步用量".to_string(),
             "退出 CC Switch Lite".to_string(),
+        )
+    } else if language.starts_with("ja") {
+        (
+            "メインウィンドウを表示".to_string(),
+            "使用量を今すぐ同期".to_string(),
+            "CC Switch Lite を終了".to_string(),
         )
     } else {
         (
@@ -125,12 +132,8 @@ fn handle_menu_event(app: &AppHandle, id: &str) {
                 .map(|state| state.db.clone())
                 .expect("托盘同步时 AppState 尚未注册");
             tauri::async_runtime::spawn(async move {
-                // 后台定时任务可能正在扫：抢不到锁就说明刚扫过，直接跳过
-                let Ok(_guard) = crate::services::session_usage::session_sync_mutex().try_lock()
-                else {
-                    log::info!("托盘「立即同步」跳过：已有同步任务在跑");
-                    return;
-                };
+                // 用户明确要求同步：有扫描在跑就排在它后面，而不是静默丢掉这次点击。
+                let _guard = crate::services::session_usage::session_sync_mutex().lock().await;
                 let _ = tauri::async_runtime::spawn_blocking(move || {
                     crate::services::session_usage::sync_all_unlocked(&db)
                 })

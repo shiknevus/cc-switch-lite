@@ -18,6 +18,7 @@ use tauri::{AppHandle, Emitter};
 
 /// 前端监听的事件名
 pub const EVENT_USAGE_LOG_RECORDED: &str = "usage-log-recorded";
+pub const EVENT_USAGE_SYNC_FINISHED: &str = "usage-sync-finished";
 
 /// 防抖窗口：合并 200ms 内的多次通知。
 const DEBOUNCE_WINDOW: Duration = Duration::from_millis(200);
@@ -68,6 +69,16 @@ pub fn notify_log_recorded() {
             log::warn!("emit {EVENT_USAGE_LOG_RECORDED} 失败: {e}");
         }
     });
+}
+
+/// 一轮会话扫描结束。没有新行时也要通知，界面上的「上次同步」时间才能往前走。
+pub fn notify_sync_finished() {
+    let Some(handle) = APP_HANDLE.get() else {
+        return;
+    };
+    if let Err(error) = handle.emit(EVENT_USAGE_SYNC_FINISHED, ()) {
+        log::warn!("emit {EVENT_USAGE_SYNC_FINISHED} 失败: {error}");
+    }
 }
 
 #[cfg(test)]

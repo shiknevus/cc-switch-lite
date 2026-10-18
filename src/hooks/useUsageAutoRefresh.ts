@@ -45,35 +45,13 @@ export function useUsageAutoRefresh({
     if (!sessionAutoSyncEnabled || refreshIntervalMs <= 0 || paused) return;
     let disposed = false;
 
-    const scan = async () => {
-      if (!focusManager.isFocused() || pendingSync.current) return;
-      try {
-        const result = await syncSessionUsage();
-        if (result.errors.length > 0) {
-          console.warn(
-            "[UsageDashboard] Session auto-sync errors",
-            result.errors,
-          );
-        }
-      } catch (error) {
-        // 静默扫描失败不弹提示，下一轮继续重试
-        console.warn("[UsageDashboard] Session auto-sync failed", error);
-      }
-      if (!disposed) {
-        await queryClient.invalidateQueries({
-          queryKey: [...usageKeys.all, "session-last-sync"],
-        });
-      }
-    };
-
-    void scan();
-    const timer = window.setInterval(() => void scan(), refreshIntervalMs);
     const unsubscribe = focusManager.subscribe((focused) => {
-      if (focused) void scan();
+      if (focused && !disposed) {
+        void queryClient.invalidateQueries({ queryKey: usageKeys.all });
+      }
     });
     return () => {
       disposed = true;
-      window.clearInterval(timer);
       unsubscribe();
     };
   }, [

@@ -25,7 +25,15 @@ use crate::services::session_usage::{
 use crate::services::usage_stats::{find_model_pricing, should_skip_session_insert, DedupKey};
 use rust_decimal::Decimal;
 use std::fs;
+use std::str::FromStr;
 use std::time::SystemTime;
+
+fn decimal_from_f64(value: f64) -> Decimal {
+    if !value.is_finite() || value <= 0.0 {
+        return Decimal::ZERO;
+    }
+    Decimal::from_str(&format!("{value:.10}")).unwrap_or(Decimal::ZERO)
+}
 
 /// 从 opencode message.data JSON 中提取的 token 和费用数据
 struct OpenCodeMessageData {
@@ -461,54 +469,54 @@ fn insert_opencode_message(
         return Ok(false);
     }
 
-    // 如果 opencode 已经提供了费用，直接使用；否则从模型定价计算
+    let reported_cost = decimal_from_f64(msg.cost);
+    let usage = TokenUsage {
+        input_tokens: msg.input_tokens,
+        output_tokens: output_with_reasoning,
+        cache_read_tokens: msg.cache_read_tokens,
+        cache_creation_tokens: msg.cache_write_tokens,
+        cache_creation_1h_tokens: 0,
+        model: Some(msg.model_id.clone()),
+        message_id: None,
+    };
+    let priced = find_model_pricing(&conn, &msg.model_id).map(|pricing| {
+        CostCalculator::calculate_for_app("opencode", &usage, &pricing, Decimal::ONE)
+    });
+    // OpenCode 的 cost 是聚合值。有本地定价时按比例拆成分项，并让分项之和等于自报总价。
+    // 没有自报时沿用本地计算。避免把 f64 的 Display 直接存进金额列。
     let (input_cost, output_cost, cache_read_cost, cache_creation_cost, total_cost) =
-        if msg.cost > 0.0 {
-            // opencode 已计算费用，直接使用
-            // 简化处理：全部放入 total_cost（opencode 的 cost 是聚合值，无法精确拆分）
-            (
-                "0".to_string(),
-                "0".to_string(),
-                "0".to_string(),
-                "0".to_string(),
-                msg.cost.to_string(),
-            )
-        } else {
-            // opencode 费用为 0（如免费模型），尝试用 cc-switch 自带的模型定价计算
-            let usage = TokenUsage {
-                input_tokens: msg.input_tokens,
-                output_tokens: output_with_reasoning,
-                cache_read_tokens: msg.cache_read_tokens,
-                cache_creation_tokens: msg.cache_write_tokens,
-                cache_creation_1h_tokens: 0,
-                model: Some(msg.model_id.clone()),
-                message_id: None,
-            };
-
-            match find_model_pricing(&conn, &msg.model_id) {
-                Some(pricing) => {
-                    let cost = CostCalculator::calculate_for_app(
-                        "opencode",
-                        &usage,
-                        &pricing,
-                        Decimal::from(1),
-                    );
-                    (
-                        cost.input_cost.to_string(),
-                        cost.output_cost.to_string(),
-                        cost.cache_read_cost.to_string(),
-                        cost.cache_creation_cost.to_string(),
-                        cost.total_cost.to_string(),
-                    )
-                }
-                None => (
-                    "0".to_string(),
-                    "0".to_string(),
-                    "0".to_string(),
-                    "0".to_string(),
-                    "0".to_string(),
-                ),
+        match (reported_cost > Decimal::ZERO, priced) {
+            (true, Some(cost)) if cost.total_cost > Decimal::ZERO => {
+                let scale = reported_cost / cost.total_cost;
+                (
+                    (cost.input_cost * scale).normalize().to_string(),
+                    (cost.output_cost * scale).normalize().to_string(),
+                    (cost.cache_read_cost * scale).normalize().to_string(),
+                    (cost.cache_creation_cost * scale).normalize().to_string(),
+                    reported_cost.normalize().to_string(),
+                )
             }
+            (true, _) => (
+                "0".to_string(),
+                "0".to_string(),
+                "0".to_string(),
+                "0".to_string(),
+                reported_cost.normalize().to_string(),
+            ),
+            (false, Some(cost)) => (
+                cost.input_cost.to_string(),
+                cost.output_cost.to_string(),
+                cost.cache_read_cost.to_string(),
+                cost.cache_creation_cost.to_string(),
+                cost.total_cost.to_string(),
+            ),
+            (false, None) => (
+                "0".to_string(),
+                "0".to_string(),
+                "0".to_string(),
+                "0".to_string(),
+                "0".to_string(),
+            ),
         };
 
     let inserted_rows = conn.execute(
