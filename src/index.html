@@ -4,7 +4,20 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>CC Switch Lite</title>
-    <script>(function(){try{var t=localStorage.getItem("cc-switch-lite-theme")||"system";var d=t==="dark"||(t==="system"&&matchMedia("(prefers-color-scheme: dark)").matches);document.documentElement.classList.toggle("dark",d);document.documentElement.classList.toggle("light",!d);}catch(e){}})()</script>
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        background-color: #09090b;
+        overflow: hidden;
+      }
+      html.light, html.light body {
+        background-color: #ffffff;
+      }
+    </style>
+    <script>(function(){try{var t=localStorage.getItem("cc-switch-lite-theme")||"system";var d=t==="dark"||(t==="system"&&matchMedia("(prefers-color-scheme: dark)").matches);document.documentElement.classList.toggle("dark",d);document.documentElement.classList.toggle("light",!d);var bg=d?"#09090b":"#ffffff";document.documentElement.style.backgroundColor=bg;if(document.body){document.body.style.backgroundColor=bg;}}catch(e){}})()</script>
   </head>
   <body>
     <div id="root"></div>

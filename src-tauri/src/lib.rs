@@ -23,21 +23,38 @@ use crate::database::Database;
 use crate::store::AppState;
 
 pub fn run() {
-    tauri::Builder::default()
+    let startup_page_handled = std::sync::atomic::AtomicBool::new(false);
+    let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(tauri_plugin_window_state::Builder::default().build());
+
+    #[cfg(target_os = "windows")]
+    {
+        builder = builder.on_page_load(move |webview, payload| {
+            if webview.label() == "main"
+                && payload.event() == tauri::webview::PageLoadEvent::Finished
+                && payload.url().scheme() != "about"
+                && !startup_page_handled.swap(true, std::sync::atomic::Ordering::Relaxed)
+            {
+                let window = webview.window();
+                let _ = window.set_decorations(false);
+                let _ = window.show();
+                let _ = window.set_focus();
+                log::info!("主页面加载完成，主窗口已显示");
+            }
+        });
+    }
+
+    builder
         .setup(|app| {
             usage_events::init(app.handle().clone());
 
             let db = Arc::new(Database::init().expect("数据库初始化失败"));
             app.manage(AppState::new(db.clone()));
 
-            // The window is hidden in tauri.conf.json so database setup and the
-            // first session scan do not expose a blank white frame. Show it as
-            // soon as the command state is ready; the scans below start after
-            // the first paint.
+            #[cfg(not(target_os = "windows"))]
             if let Some(main_window) = app.get_webview_window("main") {
                 let _ = main_window.set_decorations(false);
                 let _ = main_window.show();

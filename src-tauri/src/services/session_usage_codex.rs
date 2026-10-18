@@ -271,6 +271,7 @@ fn classify_timing_line(line: &str) -> Option<(i64, TimingLine)> {
             _ => return None,
         },
         "event_msg" => match head_str(payload, "type")? {
+            "user_message" => TimingLine::Boundary,
             "task_started" | "turn_aborted" => TimingLine::TurnReset,
             "item_completed" => output_item_started_ms(line, payload)?,
             _ => return None,
@@ -2408,6 +2409,7 @@ mod tests {
     const CHILD_B_ID: &str = "00000000-0000-4000-8000-000000000003";
     const PARENT_PAGE_ID: &str = "00000000-0000-4000-8000-000000000004";
     const CHILD_A_PAGE_ID: &str = "00000000-0000-4000-8000-000000000005";
+
     const CHILD_A_PAGE_2_ID: &str = "00000000-0000-4000-8000-000000000006";
 
     thread_local! {

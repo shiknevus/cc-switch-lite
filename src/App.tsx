@@ -25,6 +25,7 @@ export default function App() {
     void getCurrentWindow().setDecorations(false).catch((error) => {
       console.debug("Failed to hide the native title bar:", error);
     });
+    void getCurrentWindow().show().then(() => getCurrentWindow().setFocus()).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -95,7 +96,7 @@ export default function App() {
     <WindowControlsContext.Provider value={<WindowControls />}>
       <div className="flex h-screen w-screen flex-col bg-bg text-fg select-none overflow-hidden">
       {/* 主体用量仪表盘 */}
-      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
+      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-auto">
         <UsageDashboard
           refreshIntervalMs={settings?.usageDashboardRefreshIntervalMs}
           onRefreshIntervalChange={(usageDashboardRefreshIntervalMs) => {
