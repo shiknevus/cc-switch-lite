@@ -59,19 +59,64 @@ export function FloatBar() {
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const collapseTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // 同步 Rust 窗口大小与位置
+  // 今日统计范围
+  const todayRange = useMemo<UsageRangeSelection>(
+    () => ({ preset: "today" }),
+    [],
+  );
+
+  const { data: summary } = useUsageSummary(todayRange);
+  const { data: appSummaries } = useUsageSummaryByApp(todayRange);
+
+  // 计算今日数值
+  const totalCostNum = summary ? parseFloat(summary.totalCost) || 0 : 0;
+  const totalTokensNum = summary?.realTotalTokens ?? 0;
+  const totalReqsNum = summary?.totalRequests ?? 0;
+
+  // 严格从左到右按花费金额降序排列（花费最高排在最左侧）
+  const activeApps = useMemo(() => {
+    if (!appSummaries) return [];
+    return appSummaries
+      .map((item) => ({
+        appType: item.appType,
+        cost: parseFloat(item.summary.totalCost) || 0,
+        tokens: item.summary.realTotalTokens,
+        requests: item.summary.totalRequests,
+      }))
+      .filter((item) => item.requests > 0 || item.tokens > 0 || item.cost > 0)
+      .sort((a, b) => b.cost - a.cost || b.tokens - a.tokens)
+      .slice(0, 4);
+  }, [appSummaries]);
+
+  // 根据激活工具数量动态计算紧凑展开宽度（紧凑精致，绝无冗余大空白）
+  const dynamicExpandedWidth = useMemo(() => {
+    const baseWidth = 430.0;
+    const count = Math.min(activeApps.length, 4);
+    if (count === 0) return baseWidth;
+    return baseWidth + count * 68.0 + 8.0;
+  }, [activeApps.length]);
+
+  // 同步 Rust 窗口大小与位置（带自适应紧凑宽度）
   const syncWindowExpanded = useCallback(
     (nextExpanded: boolean, nextPinned?: boolean) => {
       const isPinnedEffective = nextPinned !== undefined ? nextPinned : pinned;
       void invoke("set_float_bar_expanded", {
         expanded: nextExpanded,
         pinned: isPinnedEffective,
+        customWidth: nextExpanded ? dynamicExpandedWidth : undefined,
       }).catch((e) => {
         console.debug("Failed to set float bar expanded state:", e);
       });
     },
-    [pinned],
+    [pinned, dynamicExpandedWidth],
   );
+
+  // 当工具数据导致自适应宽度变化且当前正处于展开状态时，无缝同步窗口尺寸
+  useEffect(() => {
+    if (expanded) {
+      syncWindowExpanded(true);
+    }
+  }, [dynamicExpandedWidth]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 更新语言逻辑（直接内存更新，彻底阻断 invalidateQueries 造成的无限循环）
   const applyLanguage = useCallback(
@@ -168,35 +213,6 @@ export function FloatBar() {
     if (isJa) return "回";
     return "次";
   }, [isEn, isJa]);
-
-  // 今日统计范围
-  const todayRange = useMemo<UsageRangeSelection>(
-    () => ({ preset: "today" }),
-    [],
-  );
-
-  const { data: summary } = useUsageSummary(todayRange);
-  const { data: appSummaries } = useUsageSummaryByApp(todayRange);
-
-  // 计算今日数值
-  const totalCostNum = summary ? parseFloat(summary.totalCost) || 0 : 0;
-  const totalTokensNum = summary?.realTotalTokens ?? 0;
-  const totalReqsNum = summary?.totalRequests ?? 0;
-
-  // 严格从左到右按花费金额降序排列（花费最高排在最左侧）
-  const activeApps = useMemo(() => {
-    if (!appSummaries) return [];
-    return appSummaries
-      .map((item) => ({
-        appType: item.appType,
-        cost: parseFloat(item.summary.totalCost) || 0,
-        tokens: item.summary.realTotalTokens,
-        requests: item.summary.totalRequests,
-      }))
-      .filter((item) => item.requests > 0 || item.tokens > 0 || item.cost > 0)
-      .sort((a, b) => b.cost - a.cost || b.tokens - a.tokens)
-      .slice(0, 4);
-  }, [appSummaries]);
 
   // 当外部 pinned 改变时联动展开状态
   useEffect(() => {
@@ -313,11 +329,11 @@ export function FloatBar() {
         </div>
       </div>
 
-      {/* 2. 悬浮展开的精巧胶囊数据条（宽度扩展至 870px，宽裕容纳所有工具与按钮，绝不截断） */}
+      {/* 2. 悬浮展开的精巧胶囊数据条（宽度紧凑贴合内容，绝无多余大空白） */}
       <div
         data-tauri-drag-region
         onMouseEnter={handleMouseEnter}
-        className={`absolute top-1.5 transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] ${
+        className={`absolute top-1 transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] ${
           expanded
             ? "opacity-100 pointer-events-auto translate-y-0 scale-100"
             : "opacity-0 pointer-events-none -translate-y-6 scale-95"
@@ -325,7 +341,8 @@ export function FloatBar() {
       >
         <div
           data-tauri-drag-region
-          className="h-[44px] w-[870px] rounded-full px-3.5 flex items-center justify-between gap-2.5 backdrop-blur-2xl bg-zinc-950/90 dark:bg-zinc-950/90 light:bg-white/95 border border-white/12 dark:border-white/12 light:border-zinc-300 shadow-[0_12px_40px_rgba(0,0,0,0.45)] text-zinc-100 dark:text-zinc-100 light:text-zinc-800"
+          style={{ width: `${dynamicExpandedWidth - 8}px` }}
+          className="h-[40px] rounded-full px-2.5 flex items-center justify-between gap-2 backdrop-blur-2xl bg-zinc-950/90 dark:bg-zinc-950/90 light:bg-white/95 border border-white/12 dark:border-white/12 light:border-zinc-300 shadow-[0_10px_35px_rgba(0,0,0,0.4)] text-zinc-100 dark:text-zinc-100 light:text-zinc-800"
         >
           {/* 左侧：仅「今日」标识，去掉左侧小图标，点击打开主面板 */}
           <button
@@ -346,10 +363,10 @@ export function FloatBar() {
             </span>
           </button>
 
-          {/* 中间核心统计区（整行可拖拽，原汁原味极简风） */}
+          {/* 中间核心统计区（紧凑排列，无冗余空隙） */}
           <div
             data-tauri-drag-region
-            className="flex items-center gap-2.5 flex-1 justify-center min-w-0 px-1 cursor-grab"
+            className="flex items-center gap-2 flex-1 justify-center min-w-0 px-0.5 cursor-grab"
           >
             {/* 今日花费 */}
             <div
@@ -360,12 +377,12 @@ export function FloatBar() {
               })}
             >
               <Coins className="h-3.5 w-3.5 text-emerald-400 dark:text-emerald-400 light:text-emerald-600 shrink-0" />
-              <span className="font-mono text-sm font-bold tracking-tight text-emerald-400 dark:text-emerald-400 light:text-emerald-600">
+              <span className="font-mono text-xs font-bold tracking-tight text-emerald-400 dark:text-emerald-400 light:text-emerald-600">
                 {money(totalCostNum, 2)}
               </span>
             </div>
 
-            <div className="h-3.5 w-px bg-white/10 dark:bg-white/10 light:bg-black/10 shrink-0" />
+            <div className="h-3 w-px bg-white/10 dark:bg-white/10 light:bg-black/10 shrink-0" />
 
             {/* Token 用量 */}
             <div
@@ -384,7 +401,7 @@ export function FloatBar() {
               </span>
             </div>
 
-            <div className="h-3.5 w-px bg-white/10 dark:bg-white/10 light:bg-black/10 shrink-0" />
+            <div className="h-3 w-px bg-white/10 dark:bg-white/10 light:bg-black/10 shrink-0" />
 
             {/* 请求次数（多语言单位支持） */}
             <div
@@ -406,15 +423,15 @@ export function FloatBar() {
             {/* 各工具徽章：从左到右严格按花费金额降序排列 */}
             {activeApps.length > 0 && (
               <>
-                <div className="h-3.5 w-px bg-white/10 dark:bg-white/10 light:bg-black/10 shrink-0" />
-                <div className="flex items-center gap-1.5 shrink-0">
+                <div className="h-3 w-px bg-white/10 dark:bg-white/10 light:bg-black/10 shrink-0" />
+                <div className="flex items-center gap-1 shrink-0">
                   {activeApps.map((app) => (
                     <div
                       key={app.appType}
                       className="flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-white/5 dark:bg-white/5 light:bg-black/5 border border-white/8 dark:border-white/8 light:border-black/5 text-[10px] font-mono shrink-0"
                       title={`${app.appType.toUpperCase()}: ${money(app.cost, 2)} · ${formatTokensCompact(app.tokens)} tokens · ${app.requests} ${reqUnit}`}
                     >
-                      <AppGlyph app={app.appType as AppId} size={13} />
+                      <AppGlyph app={app.appType as AppId} size={12} />
                       <span className="font-semibold text-zinc-300 dark:text-zinc-300 light:text-zinc-700">
                         {money(app.cost, 2)}
                       </span>
@@ -426,16 +443,16 @@ export function FloatBar() {
           </div>
 
           {/* 独立分割线：确保工具徽章和右侧按钮绝对隔离 */}
-          <div className="h-3.5 w-px bg-white/10 dark:bg-white/10 light:bg-black/10 shrink-0" />
+          <div className="h-3 w-px bg-white/10 dark:bg-white/10 light:bg-black/10 shrink-0" />
 
-          {/* 右侧：快捷操作按钮（独立成组，绝对防挤压 shrink-0，带 no-drag，绝无重叠） */}
+          {/* 右侧：快捷操作按钮（紧凑精炼，绝对防挤压 shrink-0，带 no-drag，绝无重叠） */}
           <div className="flex items-center gap-0.5 shrink-0" style={NO_DRAG}>
             {/* 立即同步 */}
             <button
               type="button"
               onClick={handleSyncNow}
               disabled={isSyncing}
-              className={`p-1.5 rounded-full hover:bg-white/10 dark:hover:bg-white/10 light:hover:bg-black/10 text-zinc-400 hover:text-zinc-100 transition-colors shrink-0 ${
+              className={`p-1 rounded-full hover:bg-white/10 dark:hover:bg-white/10 light:hover:bg-black/10 text-zinc-400 hover:text-zinc-100 transition-colors shrink-0 ${
                 isSyncing ? "text-purple-400" : ""
               }`}
               title={t("floatBar.syncNow", {
@@ -450,7 +467,7 @@ export function FloatBar() {
             <button
               type="button"
               onClick={togglePin}
-              className={`p-1.5 rounded-full hover:bg-white/10 dark:hover:bg-white/10 light:hover:bg-black/10 transition-colors shrink-0 ${
+              className={`p-1 rounded-full hover:bg-white/10 dark:hover:bg-white/10 light:hover:bg-black/10 transition-colors shrink-0 ${
                 pinned
                   ? "text-purple-400 bg-purple-500/20"
                   : "text-zinc-400 hover:text-zinc-100"
@@ -474,7 +491,7 @@ export function FloatBar() {
             <button
               type="button"
               onClick={handleOpenMain}
-              className="p-1.5 rounded-full hover:bg-white/10 dark:hover:bg-white/10 light:hover:bg-black/10 text-zinc-400 hover:text-zinc-100 transition-colors shrink-0"
+              className="p-1 rounded-full hover:bg-white/10 dark:hover:bg-white/10 light:hover:bg-black/10 text-zinc-400 hover:text-zinc-100 transition-colors shrink-0"
               title={t("floatBar.openFullDashboard", {
                 lng: currentLang,
                 defaultValue: isEn ? "Expand full usage dashboard" : "展开用量统计主窗口",
@@ -487,7 +504,7 @@ export function FloatBar() {
             <button
               type="button"
               onClick={handleHideBar}
-              className="p-1.5 rounded-full hover:bg-red-500/20 hover:text-red-400 text-zinc-400 transition-colors shrink-0"
+              className="p-1 rounded-full hover:bg-red-500/20 hover:text-red-400 text-zinc-400 transition-colors shrink-0"
               title={t("floatBar.hide", {
                 lng: currentLang,
                 defaultValue: isEn ? "Hide float bar (re-enable via tray or settings)" : "隐藏桌面悬浮顶栏（可在托盘或设置中重新开启）",

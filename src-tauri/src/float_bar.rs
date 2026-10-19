@@ -10,18 +10,23 @@ use crate::settings;
 use crate::store::AppState;
 
 pub const FLOAT_BAR_LABEL: &str = "float_bar";
-pub const FLOAT_BAR_WIDTH_EXPANDED: f64 = 890.0;
+pub const FLOAT_BAR_WIDTH_EXPANDED: f64 = 720.0;
 pub const FLOAT_BAR_WIDTH_COLLAPSED: f64 = 184.0;
-pub const FLOAT_BAR_HEIGHT_EXPANDED: f64 = 60.0;
+pub const FLOAT_BAR_HEIGHT_EXPANDED: f64 = 52.0;
 pub const FLOAT_BAR_HEIGHT_COLLAPSED: f64 = 12.0;
 
 /// 缓存用户拖动后的中心 X 坐标，收缩与展开时围绕该中心点等距伸缩，绝不跳回屏幕正中央
 static FLOAT_BAR_CENTER_X: Mutex<Option<f64>> = Mutex::new(None);
 
 /// 将悬浮条对齐并根据展开状态调整窗口大小与屏幕位置
-pub fn align_float_bar_to_screen(window: &WebviewWindow, position_mode: &str, expanded: bool) {
+pub fn align_float_bar_to_screen(
+    window: &WebviewWindow,
+    position_mode: &str,
+    expanded: bool,
+    custom_width: Option<f64>,
+) {
     let width = if expanded {
-        FLOAT_BAR_WIDTH_EXPANDED
+        custom_width.unwrap_or(FLOAT_BAR_WIDTH_EXPANDED)
     } else {
         FLOAT_BAR_WIDTH_COLLAPSED
     };
@@ -108,7 +113,7 @@ pub fn setup_float_bar(app: &AppHandle) {
         .unwrap_or((true, false, "top_center".to_string()));
 
     // 默认开机及启动时悬浮条就生效并精确定位大小
-    align_float_bar_to_screen(&window, &position, pinned);
+    align_float_bar_to_screen(&window, &position, pinned, None);
 
     if enabled {
         let _ = window.show();
@@ -126,6 +131,7 @@ pub async fn set_float_bar_expanded(
     app: AppHandle,
     expanded: bool,
     pinned: Option<bool>,
+    custom_width: Option<f64>,
 ) -> Result<(), String> {
     let Some(window) = app.get_webview_window(FLOAT_BAR_LABEL) else {
         return Err("float_bar window not found".to_string());
@@ -139,7 +145,7 @@ pub async fn set_float_bar_expanded(
 
     let is_pinned = pinned.unwrap_or(db_pinned);
     let is_expanded = is_pinned || expanded;
-    align_float_bar_to_screen(&window, &position, is_expanded);
+    align_float_bar_to_screen(&window, &position, is_expanded, custom_width);
     let _ = window.set_always_on_top(true);
 
     // 持久化保存当前中心点 X 坐标
@@ -175,7 +181,7 @@ pub async fn toggle_float_bar(app: AppHandle, enabled: Option<bool>) -> Result<b
     }
 
     if new_enabled {
-        align_float_bar_to_screen(&window, &current_settings.float_bar_position, current_settings.float_bar_pinned);
+        align_float_bar_to_screen(&window, &current_settings.float_bar_position, current_settings.float_bar_pinned, None);
         let _ = window.show();
         let _ = window.set_always_on_top(true);
         let _ = window.set_skip_taskbar(true);
@@ -206,7 +212,7 @@ pub async fn reposition_float_bar(app: AppHandle, position: Option<String>) -> R
         .unwrap_or(false);
 
     let pos = position.unwrap_or_else(|| "top_center".to_string());
-    align_float_bar_to_screen(&window, &pos, pinned);
+    align_float_bar_to_screen(&window, &pos, pinned, None);
     Ok(())
 }
 
