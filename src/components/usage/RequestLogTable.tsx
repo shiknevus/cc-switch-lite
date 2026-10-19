@@ -214,10 +214,6 @@ export function RequestLogTable({
   // 「今天」按本地时区判断；每次渲染（含自动刷新）取一次当前时间
   const now = new Date();
 
-  if (isLoading) {
-    return <div className={usageTable.skeleton} />;
-  }
-
   // 带说明的列在表头挂「?」，其余只写列名
   const headerHelp: Partial<
     Record<RequestLogColumnId, { title: string; body: string }>
@@ -235,6 +231,10 @@ export function RequestLogTable({
     }),
     [t],
   );
+
+  if (isLoading) {
+    return <div className={usageTable.skeleton} />;
+  }
   const renderHeader = (id: RequestLogColumnId) => {
     const label = t(REQUEST_LOG_COLUMN_LABEL_KEYS[id]);
     const help = headerHelp[id];

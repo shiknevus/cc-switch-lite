@@ -1,6 +1,6 @@
 [package]
 name = "cc-switch-lite"
-version = "1.2.3"
+version = "1.2.4"
 description = "Lightweight usage and cost statistics assistant for AI coding tools"
 authors = ["Jason Young", "CC Switch Team"]
 license = "MIT"

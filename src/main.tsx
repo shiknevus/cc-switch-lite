@@ -8,6 +8,7 @@ import { ThemeProvider } from "@/components/theme-provider";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { queryClient } from "@/lib/query";
 import { Toaster } from "@/components/ui/sonner";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { installGlobalErrorHandlers } from "@/lib/frontendLogger";
 import { initializeInputModality } from "@/lib/inputModality";
 import { initializeWindowActivity } from "@/lib/windowActivity";
@@ -34,7 +35,9 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
     <QueryClientProvider client={queryClient}>
       <ThemeProvider defaultTheme="system" storageKey="cc-switch-lite-theme">
         <TooltipProvider delayDuration={0} skipDelayDuration={0}>
-          <App />
+          <ErrorBoundary>
+            <App />
+          </ErrorBoundary>
         </TooltipProvider>
         <Toaster />
       </ThemeProvider>
