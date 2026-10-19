@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+﻿import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "@/lib/toast";
@@ -243,6 +243,14 @@ interface UsageDashboardProps {
   onSilentStartupChange?: (
     next: boolean,
   ) => Promise<boolean> | boolean | void;
+  floatBarEnabled?: boolean;
+  onFloatBarEnabledChange?: (
+    next: boolean,
+  ) => Promise<boolean> | boolean | void;
+  floatBarAutoHide?: boolean;
+  onFloatBarAutoHideChange?: (
+    next: boolean,
+  ) => Promise<boolean> | boolean | void;
   /** 从应用页「查看此应用的用量」进入时带上的应用筛选 */
   initialAppType?: AppTypeFilter;
   /** 金额显示币种与汇率（设备级设置） */
@@ -268,6 +276,10 @@ export function UsageDashboard({
   onLaunchOnStartupChange,
   silentStartup = false,
   onSilentStartupChange,
+  floatBarEnabled = true,
+  onFloatBarEnabledChange,
+  floatBarAutoHide = true,
+  onFloatBarAutoHideChange,
   initialAppType = "all",
   usageDisplay,
   onUsageDisplayChange,
@@ -870,6 +882,10 @@ export function UsageDashboard({
                 }
                 silentStartup={silentStartup}
                 onSilentStartupChange={(next) => void onSilentStartupChange?.(next)}
+                floatBarEnabled={floatBarEnabled}
+                onFloatBarEnabledChange={onFloatBarEnabledChange}
+                floatBarAutoHide={floatBarAutoHide}
+                onFloatBarAutoHideChange={onFloatBarAutoHideChange}
               />
             )}
             <section aria-labelledby="usage-pricing-title">

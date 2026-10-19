@@ -1,4 +1,4 @@
-export type AppId =
+﻿export type AppId =
   | "claude"
   | "claude-desktop"
   | "codex"
@@ -30,6 +30,14 @@ export interface Settings {
   launchOnStartup?: boolean;
   /** 开机自启拉起来时只驻留托盘，不显示主窗口 */
   silentStartup?: boolean;
+  /** 桌面悬浮顶栏是否启用 */
+  floatBarEnabled?: boolean;
+  /** 桌面悬浮顶栏是否贴边自动隐藏 */
+  floatBarAutoHide?: boolean;
+  /** 桌面悬浮顶栏位置: "top_center" | "top_right" | "top_left" */
+  floatBarPosition?: "top_center" | "top_right" | "top_left" | string;
+  /** 桌面悬浮顶栏是否钉住（展开常驻） */
+  floatBarPinned?: boolean;
   usageDisplay?: UsageDisplaySettings;
 }
 
@@ -38,5 +46,3 @@ export interface Provider {
   name: string;
   appType: string;
 }
-
-

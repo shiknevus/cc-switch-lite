@@ -1068,7 +1068,11 @@
     },
     "data": {
       "location": "Location"
-    }
+    },
+    "floatBarEnabled": "Desktop Float Bar",
+    "floatBarEnabledDescription": "Dock a minimal usage bar at screen edge to monitor token and cost expenditure",
+    "floatBarAutoHide": "Auto-hide to Edge",
+    "floatBarAutoHideDescription": "Collapse to a glowing pill when idle, smoothly expands on hover"
   },
   "apps": {
     "claude": "Claude",
@@ -4882,5 +4886,18 @@
       "refresh": "Refresh quota",
       "refreshAria": "Refresh quota for {{login}}"
     }
+  },
+  "floatBar": {
+    "hoverHint": "Hover to reveal usage statistics",
+    "today": "Today",
+    "openMain": "Open main dashboard",
+    "syncNow": "Sync latest session usage now",
+    "pin": "Pin float bar (keep expanded)",
+    "unpin": "Unpin float bar (auto-hide to top edge)",
+    "openFullDashboard": "Expand full usage dashboard",
+    "hide": "Hide float bar (re-enable via tray or settings)",
+    "hint": "Float bar is draggable. Toggle visibility via tray or header icon.",
+    "enableHint": "Show desktop float bar",
+    "disableHint": "Hide desktop float bar"
   }
 }

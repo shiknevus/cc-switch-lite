@@ -23,6 +23,20 @@
         "resizable": true,
         "fullscreen": false,
         "center": true
+      },
+      {
+        "label": "float_bar",
+        "title": "CC Switch Lite Float Bar",
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "width": 640,
+        "height": 56,
+        "visible": false,
+        "center": false
       }
     ],
     "security": {

@@ -6,6 +6,7 @@ pub mod commands;
 pub mod config;
 pub mod database;
 pub mod error;
+pub mod float_bar;
 pub mod gemini_config;
 pub mod mcode_config;
 pub mod opencode_config;
@@ -208,6 +209,9 @@ pub fn run() {
                 log::error!("创建系统托盘失败，关窗后将无法唤回窗口: {e}");
             }
 
+            // 初始化桌面悬浮顶栏/侧栏窗口
+            float_bar::setup_float_bar(app.handle());
+
             #[cfg(not(target_os = "windows"))]
             if let Some(main_window) = app.get_webview_window("main") {
                 let _ = main_window.set_decorations(false);
@@ -336,6 +340,10 @@ pub fn run() {
             commands::misc::open_dir,
             commands::misc::open_app_config_dir,
             commands::misc::set_window_theme,
+            float_bar::set_float_bar_expanded,
+            float_bar::toggle_float_bar,
+            float_bar::reposition_float_bar,
+            float_bar::open_main_window_from_float,
         ])
         .run(tauri::generate_context!())
         .expect("error while running cc-switch-lite application");

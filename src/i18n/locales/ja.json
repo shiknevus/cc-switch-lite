@@ -1068,7 +1068,11 @@
     },
     "data": {
       "location": "保存場所"
-    }
+    },
+    "floatBarEnabled": "デスクトップフローティングバー",
+    "floatBarEnabledDescription": "画面の端に最小限の使用量バーを常驻させ、Token と費用を把握します",
+    "floatBarAutoHide": "端に自動で隠す",
+    "floatBarAutoHideDescription": "マウスを離すと小さなインジケーターに縮小し、ホバーでスムーズに展開します"
   },
   "apps": {
     "claude": "Claude",
@@ -4882,5 +4886,18 @@
       "refresh": "残量を更新",
       "refreshAria": "{{login}} の残量を更新"
     }
+  },
+  "floatBar": {
+    "hoverHint": "ホバーで使用量統計を表示",
+    "today": "今日",
+    "openMain": "メインダッシュボードを開く",
+    "syncNow": "セッション使用量を今すぐ同期",
+    "pin": "バーを固定（展開したままにする）",
+    "unpin": "固定を解除（自動的に端へ隠す）",
+    "openFullDashboard": "全画面の使用量ダッシュボードを展開",
+    "hide": "フローティングバーを非表示にする",
+    "hint": "フローティングバーはドラッグ可能です。トレイまたは上部アイコンから表示を切り替えられます。",
+    "enableHint": "デスクトップフローティングバーを表示",
+    "disableHint": "デスクトップフローティングバーを隠す"
   }
 }

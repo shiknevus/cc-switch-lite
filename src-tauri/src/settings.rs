@@ -34,7 +34,23 @@ pub struct AppSettings {
     /// 开机自启拉起来时只驻留托盘，不显示主窗口。
     #[serde(default)]
     pub silent_startup: bool,
+    /// 桌面悬浮顶栏是否启用
+    #[serde(default = "default_true")]
+    pub float_bar_enabled: bool,
+    /// 桌面悬浮顶栏是否贴边自动隐藏
+    #[serde(default = "default_true")]
+    pub float_bar_auto_hide: bool,
+    /// 桌面悬浮顶栏位置: "top_center" | "top_right" | "top_left"
+    #[serde(default = "default_float_bar_position")]
+    pub float_bar_position: String,
+    /// 桌面悬浮顶栏是否钉住（固定展开不自动收起）
+    #[serde(default)]
+    pub float_bar_pinned: bool,
     pub usage_display: Option<UsageDisplaySettings>,
+}
+
+fn default_float_bar_position() -> String {
+    "top_center".to_string()
 }
 
 fn default_language() -> String {
@@ -63,6 +79,10 @@ impl Default for AppSettings {
             minimize_to_tray_on_close: true,
             launch_on_startup: false,
             silent_startup: false,
+            float_bar_enabled: true,
+            float_bar_auto_hide: true,
+            float_bar_position: default_float_bar_position(),
+            float_bar_pinned: false,
             usage_display: Some(UsageDisplaySettings {
                 currency: Some("USD".to_string()),
                 exchange_rates: None,
@@ -108,6 +128,18 @@ pub fn get_settings_from_db(db: &Database) -> Result<AppSettings, AppError> {
     }
     if let Some(silent) = map.get("silent_startup") {
         settings.silent_startup = parse_stored_bool(silent, false);
+    }
+    if let Some(enabled) = map.get("float_bar_enabled") {
+        settings.float_bar_enabled = parse_stored_bool(enabled, true);
+    }
+    if let Some(auto_hide) = map.get("float_bar_auto_hide") {
+        settings.float_bar_auto_hide = parse_stored_bool(auto_hide, true);
+    }
+    if let Some(pos) = map.get("float_bar_position") {
+        settings.float_bar_position = pos.clone();
+    }
+    if let Some(pinned) = map.get("float_bar_pinned") {
+        settings.float_bar_pinned = parse_stored_bool(pinned, false);
     }
     if let Some(display_json) = map.get("usage_display") {
         if let Ok(display) = serde_json::from_str::<UsageDisplaySettings>(display_json) {
@@ -174,6 +206,43 @@ pub fn save_settings_to_db(db: &Database, settings: &AppSettings) -> Result<(), 
         rusqlite::params![
             "silent_startup",
             if settings.silent_startup {
+                "true"
+            } else {
+                "false"
+            }
+        ],
+    )?;
+    tx.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+        rusqlite::params![
+            "float_bar_enabled",
+            if settings.float_bar_enabled {
+                "true"
+            } else {
+                "false"
+            }
+        ],
+    )?;
+    tx.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+        rusqlite::params![
+            "float_bar_auto_hide",
+            if settings.float_bar_auto_hide {
+                "true"
+            } else {
+                "false"
+            }
+        ],
+    )?;
+    tx.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+        rusqlite::params!["float_bar_position", &settings.float_bar_position],
+    )?;
+    tx.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+        rusqlite::params![
+            "float_bar_pinned",
+            if settings.float_bar_pinned {
                 "true"
             } else {
                 "false"

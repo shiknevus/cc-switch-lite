@@ -1068,7 +1068,11 @@
     },
     "data": {
       "location": "存储位置"
-    }
+    },
+    "floatBarEnabled": "桌面悬浮顶栏",
+    "floatBarEnabledDescription": "在屏幕边缘常驻极简用量条，随时掌握 Token 和费用开销",
+    "floatBarAutoHide": "贴边自动隐藏",
+    "floatBarAutoHideDescription": "鼠标离开时自动收起为微光指示条，悬停时平滑弹出单行用量"
   },
   "apps": {
     "claude": "Claude",
@@ -4882,5 +4886,18 @@
       "refresh": "刷新额度",
       "refreshAria": "刷新 {{login}} 的额度"
     }
+  },
+  "floatBar": {
+    "hoverHint": "悬停弹出用量统计条",
+    "today": "今日",
+    "openMain": "点击打开用量主面板",
+    "syncNow": "立即同步最新会话用量",
+    "pin": "固定常驻显示（不自动收起）",
+    "unpin": "取消固定（恢复贴边隐藏）",
+    "openFullDashboard": "展开用量统计主窗口",
+    "hide": "隐藏桌面悬浮顶栏（可在托盘或设置中重新开启）",
+    "hint": "悬浮顶栏可任意拖动，点击托盘图标或顶部图标可快速切换显示/隐藏。",
+    "enableHint": "显示桌面悬浮顶栏",
+    "disableHint": "隐藏桌面悬浮顶栏"
   }
 }

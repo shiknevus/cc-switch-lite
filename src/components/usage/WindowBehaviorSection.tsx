@@ -1,4 +1,4 @@
-import { useTranslation } from "react-i18next";
+﻿import { useTranslation } from "react-i18next";
 import { PanelTop, Power } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { HelpTip } from "@/components/ui/help-tip";
@@ -11,6 +11,10 @@ interface WindowBehaviorSectionProps {
   onLaunchOnStartupChange: (next: boolean) => void;
   silentStartup: boolean;
   onSilentStartupChange: (next: boolean) => void;
+  floatBarEnabled?: boolean;
+  onFloatBarEnabledChange?: (next: boolean) => void;
+  floatBarAutoHide?: boolean;
+  onFloatBarAutoHideChange?: (next: boolean) => void;
 }
 
 /** 一行「标签 + ? + 开关」，三个开关共用同一套排版。 */
@@ -46,13 +50,7 @@ function ToggleRow({
 }
 
 /**
- * 用量「设置」页签里的「窗口行为」：关窗是否隐到托盘常驻、以及开机自启 + 静默启动。
- *
- * 关窗开关决定后端 on_window_event 里 CloseRequested 走哪条分支：开着的时候关窗
- * 只是 hide + 收掉任务栏图标，进程、托盘和后台定时同步都继续跑。
- *
- * 静默启动依赖开机自启才成立（靠启动项里的 --silent 参数区分「开机拉起来」和
- * 「用户手动双击」），所以自启关掉时把它一并置灰。
+ * 用量「设置」页签里的「窗口行为」：关窗是否隐到托盘常驻、开机自启 + 静默启动、以及桌面悬浮顶栏。
  */
 export function WindowBehaviorSection({
   value,
@@ -61,6 +59,10 @@ export function WindowBehaviorSection({
   onLaunchOnStartupChange,
   silentStartup,
   onSilentStartupChange,
+  floatBarEnabled = true,
+  onFloatBarEnabledChange,
+  floatBarAutoHide = true,
+  onFloatBarAutoHideChange,
 }: WindowBehaviorSectionProps) {
   const { t } = useTranslation();
 
@@ -92,10 +94,33 @@ export function WindowBehaviorSection({
           onChange={onSilentStartupChange}
           disabled={!launchOnStartup}
         />
+        <ToggleRow
+          label={t("settings.floatBarEnabled", { defaultValue: "桌面悬浮顶栏" })}
+          help={t("settings.floatBarEnabledDescription", {
+            defaultValue: "在屏幕边缘常驻极简用量条，随时掌握 Token 和费用开销",
+          })}
+          checked={floatBarEnabled}
+          onChange={onFloatBarEnabledChange ?? (() => {})}
+        />
+        <ToggleRow
+          label={t("settings.floatBarAutoHide", { defaultValue: "贴边自动隐藏" })}
+          help={t("settings.floatBarAutoHideDescription", {
+            defaultValue: "鼠标离开时自动收起为微光指示条，悬停时平滑弹出单行用量",
+          })}
+          checked={floatBarAutoHide}
+          onChange={onFloatBarAutoHideChange ?? (() => {})}
+          disabled={!floatBarEnabled}
+        />
       </div>
       <p className="m-0 mt-2 flex items-start gap-1.5 text-caption text-fg-3">
         <PanelTop aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 shrink-0" />
         {t("usage.windowBehavior.trayHint")}
+      </p>
+      <p className="m-0 mt-1.5 flex items-start gap-1.5 text-caption text-fg-3">
+        <PanelTop aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 shrink-0 text-purple-400" />
+        {t("floatBar.hint", {
+          defaultValue: "悬浮顶栏可任意拖动，点击托盘图标或顶部图标可快速切换显示/隐藏。",
+        })}
       </p>
       <p className="m-0 mt-1.5 flex items-start gap-1.5 text-caption text-fg-3">
         <Power aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 shrink-0" />

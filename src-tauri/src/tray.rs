@@ -14,6 +14,7 @@ pub const TRAY_ID: &str = "cc-switch-lite";
 
 /// 菜单项 id。
 pub const MENU_SHOW: &str = "tray_show_main";
+pub const MENU_TOGGLE_FLOAT_BAR: &str = "tray_toggle_float_bar";
 pub const MENU_SYNC_NOW: &str = "tray_sync_now";
 pub const MENU_QUIT: &str = "tray_quit";
 
@@ -22,7 +23,7 @@ const TRAY_TOOLTIP: &str = "CC Switch Lite";
 
 /// 按界面语言取托盘文案：设置存在数据库里，托盘在 setup 阶段建，早于前端读设置，
 /// 这里直接读一次库，拿不到就按系统语言猜。
-fn tray_texts(app: &AppHandle) -> (String, String, String) {
+fn tray_texts(app: &AppHandle) -> (String, String, String, String) {
     let language = app
         .try_state::<AppState>()
         .and_then(|state| crate::settings::get_settings_from_db(&state.db).ok())
@@ -32,18 +33,21 @@ fn tray_texts(app: &AppHandle) -> (String, String, String) {
     if language.starts_with("zh") {
         (
             "显示主窗口".to_string(),
+            "切换桌面悬浮栏".to_string(),
             "立即同步用量".to_string(),
             "退出 CC Switch Lite".to_string(),
         )
     } else if language.starts_with("ja") {
         (
             "メインウィンドウを表示".to_string(),
+            "デスクトップフローティングバーを切替".to_string(),
             "使用量を今すぐ同期".to_string(),
             "CC Switch Lite を終了".to_string(),
         )
     } else {
         (
             "Show Main Window".to_string(),
+            "Toggle Desktop Float Bar".to_string(),
             "Sync Usage Now".to_string(),
             "Quit CC Switch Lite".to_string(),
         )
@@ -52,13 +56,15 @@ fn tray_texts(app: &AppHandle) -> (String, String, String) {
 
 /// 建托盘和固定菜单。重复调用会先移掉旧托盘，避免留两个图标。
 pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
-    let (show, sync_now, quit) = tray_texts(app);
+    let (show, toggle_float, sync_now, quit) = tray_texts(app);
 
     let show_item = MenuItem::with_id(app, MENU_SHOW, &show, true, None::<&str>)?;
+    let float_item = MenuItem::with_id(app, MENU_TOGGLE_FLOAT_BAR, &toggle_float, true, None::<&str>)?;
     let sync_item = MenuItem::with_id(app, MENU_SYNC_NOW, &sync_now, true, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, MENU_QUIT, &quit, true, None::<&str>)?;
     let menu: Menu<_> = MenuBuilder::new(app)
         .item(&show_item)
+        .item(&float_item)
         .item(&sync_item)
         .separator()
         .item(&quit_item)
@@ -126,6 +132,12 @@ pub fn show_main_window(app: &AppHandle) {
 fn handle_menu_event(app: &AppHandle, id: &str) {
     match id {
         MENU_SHOW => show_main_window(app),
+        MENU_TOGGLE_FLOAT_BAR => {
+            let app_handle = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = crate::float_bar::toggle_float_bar(app_handle, None).await;
+            });
+        }
         MENU_SYNC_NOW => {
             let db = app
                 .try_state::<AppState>()
