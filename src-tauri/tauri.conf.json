@@ -35,7 +35,7 @@
         "resizable": false,
         "width": 730,
         "height": 56,
-        "visible": false,
+        "visible": true,
         "center": false
       }
     ],

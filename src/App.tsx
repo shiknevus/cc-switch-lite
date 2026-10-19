@@ -1,3 +1,4 @@
+import { emit } from "@tauri-apps/api/event";
 ﻿import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
@@ -128,6 +129,7 @@ export default function App() {
   const handleLanguageChange = (lang: string) => {
     i18n.changeLanguage(lang);
     void autoSaveSettings({ language: lang });
+    void emit("app-language-changed", { language: lang });
   };
 
   const cycleTheme = () => {

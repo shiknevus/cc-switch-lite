@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
-  Activity,
   Coins,
   Cpu,
   Layers,
@@ -18,21 +19,15 @@ import { useUsageEventBridge } from "@/hooks/useUsageEventBridge";
 import { useUsageSummary, useUsageSummaryByApp } from "@/lib/query/usage";
 import { formatTokensCompact } from "@/components/usage/format";
 import { AppGlyph } from "@/components/shell/AppGlyph";
+import { syncLanguageFromSettings } from "@/i18n";
 import type { AppId } from "@/types";
 import type { UsageRangeSelection } from "@/types/usage";
 import { usageApi } from "@/lib/api/usage";
 
-const CORE_TOOL_ORDER: Record<string, number> = {
-  claude: 1,
-  codex: 2,
-  gemini: 3,
-  dsh: 4,
-};
-
 const NO_DRAG = { WebkitAppRegion: "no-drag" } as React.CSSProperties;
 
 export function FloatBar() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { settings, autoSaveSettings } = useSettings();
   const { money } = useMoneyFormat();
   useUsageEventBridge();
@@ -43,6 +38,54 @@ export function FloatBar() {
   const [expanded, setExpanded] = useState<boolean>(isPinned);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const collapseTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // 默认软件启动时显示悬浮窗
+  useEffect(() => {
+    if (settings?.floatBarEnabled !== false) {
+      try {
+        const win = getCurrentWindow();
+        void win.show();
+        void win.setAlwaysOnTop(true);
+      } catch (e) {
+        console.debug("Float bar show error:", e);
+      }
+    }
+  }, [settings?.floatBarEnabled]);
+
+  // 1. 同步主窗口的语言配置（来自 SQLite settings）
+  useEffect(() => {
+    if (settings?.language) {
+      syncLanguageFromSettings(settings.language);
+      if (i18n.language !== settings.language) {
+        void i18n.changeLanguage(settings.language);
+      }
+    }
+  }, [settings?.language, i18n]);
+
+  // 2. 监听主窗口语言切换广播事件，保持双窗语言完全一致
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<{ language: string }>("app-language-changed", (event) => {
+      const nextLang = event.payload?.language;
+      if (nextLang) {
+        syncLanguageFromSettings(nextLang);
+        void i18n.changeLanguage(nextLang);
+      }
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => {
+      unlisten?.();
+    };
+  }, [i18n]);
+
+  // 根据当前语言确定请求次数单位（中文: 次, 英文: reqs, 日文: 回）
+  const reqUnit = useMemo(() => {
+    const lang = i18n.language || "zh";
+    if (lang.startsWith("en")) return "reqs";
+    if (lang.startsWith("ja")) return "回";
+    return "次";
+  }, [i18n.language]);
 
   // 今日统计范围
   const todayRange = useMemo<UsageRangeSelection>(
@@ -58,7 +101,7 @@ export function FloatBar() {
   const totalTokensNum = summary?.realTotalTokens ?? 0;
   const totalReqsNum = summary?.totalRequests ?? 0;
 
-  // 排序前几位活跃应用：核心工具（Claude/Codex/Agy/DSH）优先排列，确保 DSH 稳固展示
+  // 严格从左到右按花费金额降序排列（花费最高排在最左侧）
   const activeApps = useMemo(() => {
     if (!appSummaries) return [];
     return appSummaries
@@ -69,16 +112,11 @@ export function FloatBar() {
         requests: item.summary.totalRequests,
       }))
       .filter((item) => item.requests > 0 || item.tokens > 0 || item.cost > 0)
-      .sort((a, b) => {
-        const orderA = CORE_TOOL_ORDER[a.appType] ?? 99;
-        const orderB = CORE_TOOL_ORDER[b.appType] ?? 99;
-        if (orderA !== orderB) return orderA - orderB;
-        return b.cost - a.cost;
-      })
+      .sort((a, b) => b.cost - a.cost || b.tokens - a.tokens)
       .slice(0, 4);
   }, [appSummaries]);
 
-  // 同步 Rust 窗口高度
+  // 同步 Rust 窗口大小与位置
   const syncWindowExpanded = useCallback((nextExpanded: boolean) => {
     void invoke("set_float_bar_expanded", { expanded: nextExpanded }).catch(
       (e) => {
@@ -95,7 +133,7 @@ export function FloatBar() {
     }
   }, [isPinned, expanded, syncWindowExpanded]);
 
-  // 鼠标移入：立即展开
+  // 鼠标移入指示条（只有进入该隐藏小条范围才触发）：立即展开
   const handleMouseEnter = () => {
     if (collapseTimerRef.current) {
       clearTimeout(collapseTimerRef.current);
@@ -107,7 +145,7 @@ export function FloatBar() {
     }
   };
 
-  // 鼠标移出：如果未锁定且开启自动贴边隐藏，延迟收起
+  // 鼠标移出整个胶囊：如果未锁定且开启自动贴边隐藏，延迟收起回微小指示条
   const handleMouseLeave = () => {
     if (isPinned || !autoHide) return;
     if (collapseTimerRef.current) {
@@ -162,12 +200,12 @@ export function FloatBar() {
   return (
     <div
       className="w-full h-full flex flex-col items-center justify-start select-none relative overflow-visible font-sans"
-      onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
     >
-      {/* 1. 贴顶微小感应指示条（未展开时显示） */}
+      {/* 1. 贴顶微小感应指示条（隐藏状态下仅在这块范围内才悬浮展开） */}
       <div
         data-tauri-drag-region
+        onMouseEnter={handleMouseEnter}
         className={`absolute top-0 flex items-center justify-center transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] ${
           expanded
             ? "opacity-0 pointer-events-none -translate-y-2"
@@ -176,6 +214,7 @@ export function FloatBar() {
       >
         <div
           data-tauri-drag-region
+          onMouseEnter={handleMouseEnter}
           className="h-2.5 w-44 rounded-b-full px-2 flex items-center justify-center gap-1.5 cursor-pointer backdrop-blur-xl bg-zinc-900/90 dark:bg-zinc-900/90 light:bg-zinc-100/95 border-b border-x border-purple-500/30 shadow-[0_4px_16px_rgba(168,85,247,0.3)] hover:h-3.5 hover:w-48 hover:shadow-[0_6px_20px_rgba(168,85,247,0.5)] transition-all duration-200"
           title={t("floatBar.hoverHint", { defaultValue: "悬停弹出用量统计条" })}
         >
@@ -192,6 +231,7 @@ export function FloatBar() {
       {/* 2. 悬浮展开的精巧胶囊数据条 */}
       <div
         data-tauri-drag-region
+        onMouseEnter={handleMouseEnter}
         className={`absolute top-1.5 transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] ${
           expanded
             ? "opacity-100 pointer-events-auto translate-y-0 scale-100"
@@ -202,23 +242,18 @@ export function FloatBar() {
           data-tauri-drag-region
           className="h-[44px] w-[718px] rounded-full px-3 flex items-center justify-between gap-2.5 backdrop-blur-2xl bg-zinc-950/90 dark:bg-zinc-950/90 light:bg-white/95 border border-white/12 dark:border-white/12 light:border-zinc-300 shadow-[0_12px_40px_rgba(0,0,0,0.45)] text-zinc-100 dark:text-zinc-100 light:text-zinc-800"
         >
-          {/* 左侧：Logo 与今日标识 */}
-          <div
-            className="flex items-center gap-1.5 cursor-pointer shrink-0"
+          {/* 左侧：仅「今日」标识，去掉左侧小图标，点击打开主面板 */}
+          <button
+            type="button"
+            className="flex items-center cursor-pointer shrink-0 outline-none"
             onClick={handleOpenMain}
             title={t("floatBar.openMain", { defaultValue: "点击打开用量主面板" })}
             style={NO_DRAG}
           >
-            <div className="relative flex items-center justify-center h-5 w-5 rounded-md bg-gradient-to-tr from-purple-600 to-indigo-500 shadow-sm text-white">
-              <Activity className="h-3 w-3" />
-              {isSyncing && (
-                <span className="absolute -inset-1 rounded-md border border-purple-400/60 animate-ping" />
-              )}
-            </div>
-            <span className="text-[11px] font-medium px-1.5 py-0.5 rounded-full bg-purple-500/15 text-purple-400 dark:text-purple-300 light:text-purple-600 border border-purple-500/25">
+            <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-purple-500/15 text-purple-400 dark:text-purple-300 light:text-purple-600 border border-purple-500/25 hover:bg-purple-500/25 transition-colors">
               {t("floatBar.today", { defaultValue: "今日" })}
             </span>
-          </div>
+          </button>
 
           {/* 中间核心统计区（整行可拖拽，原汁原味极简风） */}
           <div
@@ -254,7 +289,7 @@ export function FloatBar() {
 
             <div className="h-3.5 w-px bg-white/10 dark:bg-white/10 light:bg-black/10 shrink-0" />
 
-            {/* 请求次数 */}
+            {/* 请求次数（多语言单位支持） */}
             <div
               className="flex items-center gap-1 shrink-0"
               title={t("usage.requests", { defaultValue: "调用请求数" })}
@@ -264,11 +299,11 @@ export function FloatBar() {
                 {totalReqsNum}
               </span>
               <span className="text-[10px] text-zinc-400 dark:text-zinc-400 light:text-zinc-500">
-                次
+                {reqUnit}
               </span>
             </div>
 
-            {/* 各工具徽章：图标 + 金额极简风，按 Claude / Codex / Agy / DSH 顺畅排列 */}
+            {/* 各工具徽章：从左到右严格按花费金额降序排列 */}
             {activeApps.length > 0 && (
               <>
                 <div className="h-3.5 w-px bg-white/10 dark:bg-white/10 light:bg-black/10 shrink-0" />
@@ -277,7 +312,7 @@ export function FloatBar() {
                     <div
                       key={app.appType}
                       className="flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-white/5 dark:bg-white/5 light:bg-black/5 border border-white/8 dark:border-white/8 light:border-black/5 text-[10px] font-mono shrink-0"
-                      title={`${app.appType.toUpperCase()}: ${money(app.cost, 2)} · ${formatTokensCompact(app.tokens)} tokens · ${app.requests} 次`}
+                      title={`${app.appType.toUpperCase()}: ${money(app.cost, 2)} · ${formatTokensCompact(app.tokens)} tokens · ${app.requests} ${reqUnit}`}
                     >
                       <AppGlyph app={app.appType as AppId} size={13} />
                       <span className="font-semibold text-zinc-300 dark:text-zinc-300 light:text-zinc-700">

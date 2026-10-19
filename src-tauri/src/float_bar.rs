@@ -9,12 +9,24 @@ use crate::settings;
 use crate::store::AppState;
 
 pub const FLOAT_BAR_LABEL: &str = "float_bar";
-pub const FLOAT_BAR_WIDTH: f64 = 730.0;
+pub const FLOAT_BAR_WIDTH_EXPANDED: f64 = 730.0;
+pub const FLOAT_BAR_WIDTH_COLLAPSED: f64 = 184.0;
 pub const FLOAT_BAR_HEIGHT_EXPANDED: f64 = 56.0;
-pub const FLOAT_BAR_HEIGHT_COLLAPSED: f64 = 10.0;
+pub const FLOAT_BAR_HEIGHT_COLLAPSED: f64 = 12.0;
 
-/// 将悬浮条对齐到当前/主显示器顶部位置
-pub fn align_float_bar_to_screen(window: &WebviewWindow, position_mode: &str) {
+/// 将悬浮条对齐并根据展开状态调整窗口大小与屏幕位置
+pub fn align_float_bar_to_screen(window: &WebviewWindow, position_mode: &str, expanded: bool) {
+    let width = if expanded {
+        FLOAT_BAR_WIDTH_EXPANDED
+    } else {
+        FLOAT_BAR_WIDTH_COLLAPSED
+    };
+    let height = if expanded {
+        FLOAT_BAR_HEIGHT_EXPANDED
+    } else {
+        FLOAT_BAR_HEIGHT_COLLAPSED
+    };
+
     let monitor = window
         .current_monitor()
         .ok()
@@ -31,17 +43,18 @@ pub fn align_float_bar_to_screen(window: &WebviewWindow, position_mode: &str) {
         let mon_w = mon_size.width as f64 / scale;
 
         let target_x = match position_mode {
-            "top_right" => mon_x + mon_w - FLOAT_BAR_WIDTH - 24.0,
+            "top_right" => mon_x + mon_w - width - 24.0,
             "top_left" => mon_x + 24.0,
-            _ => mon_x + (mon_w - FLOAT_BAR_WIDTH) / 2.0, // top_center default
+            _ => mon_x + (mon_w - width) / 2.0, // top_center default
         };
         let target_y = mon_y;
 
+        let _ = window.set_size(LogicalSize::new(width, height));
         let _ = window.set_position(LogicalPosition::new(target_x, target_y));
     }
 }
 
-/// 启动时初始化悬浮条窗口
+/// 启动时初始化悬浮条窗口（默认开启显示）
 pub fn setup_float_bar(app: &AppHandle) {
     let Some(window) = app.get_webview_window(FLOAT_BAR_LABEL) else {
         log::warn!("找不到 label={FLOAT_BAR_LABEL} 的窗口，跳过悬浮顶栏初始化");
@@ -58,46 +71,34 @@ pub fn setup_float_bar(app: &AppHandle) {
         .map(|s| (s.float_bar_enabled, s.float_bar_pinned, s.float_bar_position))
         .unwrap_or((true, false, "top_center".to_string()));
 
-    align_float_bar_to_screen(&window, &position);
-
-    let initial_height = if pinned {
-        FLOAT_BAR_HEIGHT_EXPANDED
-    } else {
-        FLOAT_BAR_HEIGHT_COLLAPSED
-    };
-    let _ = window.set_size(LogicalSize::new(FLOAT_BAR_WIDTH, initial_height));
+    // 默认开机及启动时悬浮条就生效并精确定位大小
+    align_float_bar_to_screen(&window, &position, pinned);
 
     if enabled {
         let _ = window.show();
         let _ = window.set_always_on_top(true);
-        log::info!("桌面悬浮顶栏已初始化并显示");
+        log::info!("桌面悬浮顶栏已初始化并默认显示");
     } else {
         let _ = window.hide();
         log::info!("桌面悬浮顶栏设置关闭，保持隐藏");
     }
 }
 
-/// 前端悬停/离开时动态调整窗口高度
+/// 前端悬停/离开时动态调整窗口大小与位置
 #[tauri::command]
 pub async fn set_float_bar_expanded(app: AppHandle, expanded: bool) -> Result<(), String> {
     let Some(window) = app.get_webview_window(FLOAT_BAR_LABEL) else {
         return Err("float_bar window not found".to_string());
     };
 
-    let pinned = app
+    let (pinned, position) = app
         .try_state::<AppState>()
         .and_then(|state| settings::get_settings_from_db(&state.db).ok())
-        .map(|s| s.float_bar_pinned)
-        .unwrap_or(false);
+        .map(|s| (s.float_bar_pinned, s.float_bar_position))
+        .unwrap_or((false, "top_center".to_string()));
 
-    // 如果处于钉住状态，保持完全展开高度
-    let target_height = if pinned || expanded {
-        FLOAT_BAR_HEIGHT_EXPANDED
-    } else {
-        FLOAT_BAR_HEIGHT_COLLAPSED
-    };
-
-    let _ = window.set_size(LogicalSize::new(FLOAT_BAR_WIDTH, target_height));
+    let is_expanded = pinned || expanded;
+    align_float_bar_to_screen(&window, &position, is_expanded);
     let _ = window.set_always_on_top(true);
     Ok(())
 }
@@ -123,13 +124,7 @@ pub async fn toggle_float_bar(app: AppHandle, enabled: Option<bool>) -> Result<b
     }
 
     if new_enabled {
-        align_float_bar_to_screen(&window, &current_settings.float_bar_position);
-        let height = if current_settings.float_bar_pinned {
-            FLOAT_BAR_HEIGHT_EXPANDED
-        } else {
-            FLOAT_BAR_HEIGHT_COLLAPSED
-        };
-        let _ = window.set_size(LogicalSize::new(FLOAT_BAR_WIDTH, height));
+        align_float_bar_to_screen(&window, &current_settings.float_bar_position, current_settings.float_bar_pinned);
         let _ = window.show();
         let _ = window.set_always_on_top(true);
         let _ = window.set_skip_taskbar(true);
@@ -148,8 +143,14 @@ pub async fn reposition_float_bar(app: AppHandle, position: Option<String>) -> R
         return Err("float_bar window not found".to_string());
     };
 
+    let pinned = app
+        .try_state::<AppState>()
+        .and_then(|state| settings::get_settings_from_db(&state.db).ok())
+        .map(|s| s.float_bar_pinned)
+        .unwrap_or(false);
+
     let pos = position.unwrap_or_else(|| "top_center".to_string());
-    align_float_bar_to_screen(&window, &pos);
+    align_float_bar_to_screen(&window, &pos, pinned);
     Ok(())
 }
 
@@ -159,4 +160,3 @@ pub async fn open_main_window_from_float(app: AppHandle) -> Result<(), String> {
     crate::tray::show_main_window(&app);
     Ok(())
 }
-
