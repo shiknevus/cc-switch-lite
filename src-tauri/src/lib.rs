@@ -84,6 +84,13 @@ pub fn run() {
         // 拦截关闭：按设置决定隐到托盘后台常驻，还是直接退出进程
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "float_bar" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                    log::info!("悬浮窗关闭请求已处理：隐藏悬浮窗");
+                    return;
+                }
+
                 let minimize_to_tray = window
                     .try_state::<AppState>()
                     .map(|state| match settings::get_settings_from_db(&state.db) {

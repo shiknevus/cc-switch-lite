@@ -149,12 +149,12 @@ export default function App() {
   };
 
   const handleLanguageChange = async (lang: string) => {
+    if (lang === i18n.language) return;
     syncLanguageFromSettings(lang);
     await i18n.changeLanguage(lang);
     void autoSaveSettings({ language: lang });
     void emit("app-language-changed", { language: lang });
     void emitTo("float_bar", "app-language-changed", { language: lang });
-    void emitTo("main", "app-language-changed", { language: lang });
   };
 
   const cycleTheme = () => {
@@ -194,7 +194,7 @@ export default function App() {
       </Button>
 
       {/* 语言切换 */}
-      <DropdownMenu>
+      <DropdownMenu modal={false}>
         <DropdownMenuTrigger asChild>
           <Button
             variant="ghost"

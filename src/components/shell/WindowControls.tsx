@@ -93,7 +93,14 @@ export function WindowControls() {
           type="button"
           className={cn(BUTTON, "hover:bg-danger-soft hover:text-danger-text")}
           aria-label={t("header.windowClose")}
-          onClick={() => void run(() => getCurrentWindow().close())}
+          onClick={() => {
+            try {
+              const win = getCurrentWindow();
+              void win.close().catch(() => void win.hide());
+            } catch (error) {
+              console.error("[WindowControls] Close window failed", error);
+            }
+          }}
         >
           <X className="h-4 w-4" />
         </button>

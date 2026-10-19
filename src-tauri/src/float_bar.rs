@@ -9,9 +9,9 @@ use crate::settings;
 use crate::store::AppState;
 
 pub const FLOAT_BAR_LABEL: &str = "float_bar";
-pub const FLOAT_BAR_WIDTH_EXPANDED: f64 = 730.0;
+pub const FLOAT_BAR_WIDTH_EXPANDED: f64 = 890.0;
 pub const FLOAT_BAR_WIDTH_COLLAPSED: f64 = 184.0;
-pub const FLOAT_BAR_HEIGHT_EXPANDED: f64 = 56.0;
+pub const FLOAT_BAR_HEIGHT_EXPANDED: f64 = 60.0;
 pub const FLOAT_BAR_HEIGHT_COLLAPSED: f64 = 12.0;
 
 /// 将悬浮条对齐并根据展开状态调整窗口大小与屏幕位置
@@ -86,18 +86,23 @@ pub fn setup_float_bar(app: &AppHandle) {
 
 /// 前端悬停/离开时动态调整窗口大小与位置
 #[tauri::command]
-pub async fn set_float_bar_expanded(app: AppHandle, expanded: bool) -> Result<(), String> {
+pub async fn set_float_bar_expanded(
+    app: AppHandle,
+    expanded: bool,
+    pinned: Option<bool>,
+) -> Result<(), String> {
     let Some(window) = app.get_webview_window(FLOAT_BAR_LABEL) else {
         return Err("float_bar window not found".to_string());
     };
 
-    let (pinned, position) = app
+    let (db_pinned, position) = app
         .try_state::<AppState>()
         .and_then(|state| settings::get_settings_from_db(&state.db).ok())
         .map(|s| (s.float_bar_pinned, s.float_bar_position))
         .unwrap_or((false, "top_center".to_string()));
 
-    let is_expanded = pinned || expanded;
+    let is_pinned = pinned.unwrap_or(db_pinned);
+    let is_expanded = is_pinned || expanded;
     align_float_bar_to_screen(&window, &position, is_expanded);
     let _ = window.set_always_on_top(true);
     Ok(())

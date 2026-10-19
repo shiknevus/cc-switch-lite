@@ -33,7 +33,7 @@ export function FloatBar() {
   const { money } = useMoneyFormat();
   useUsageEventBridge();
 
-  // 显式维护当前窗口语言状态，确保双向广播时百分之百强制局部与全局即时刷新
+  // 显式维护当前窗口语言状态，确保双向广播时即时渲染
   const [currentLang, setCurrentLang] = useState<string>(() => {
     if (typeof window !== "undefined") {
       try {
@@ -44,25 +44,52 @@ export function FloatBar() {
     return i18n.language || "zh";
   });
 
-  const isPinned = settings?.floatBarPinned ?? false;
-  const autoHide = settings?.floatBarAutoHide ?? true;
+  // 本地即时维护 pinned 状态，避免点击图钉按钮等待 IPC 导致的界面卡死感
+  const [pinned, setPinned] = useState<boolean>(
+    () => settings?.floatBarPinned ?? false,
+  );
+  useEffect(() => {
+    if (settings?.floatBarPinned !== undefined) {
+      setPinned(settings.floatBarPinned);
+    }
+  }, [settings?.floatBarPinned]);
 
-  const [expanded, setExpanded] = useState<boolean>(isPinned);
+  const autoHide = settings?.floatBarAutoHide ?? true;
+  const [expanded, setExpanded] = useState<boolean>(() => settings?.floatBarPinned ?? false);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const collapseTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // 更新语言的统一执行逻辑
+  // 同步 Rust 窗口大小与位置
+  const syncWindowExpanded = useCallback(
+    (nextExpanded: boolean, nextPinned?: boolean) => {
+      const isPinnedEffective = nextPinned !== undefined ? nextPinned : pinned;
+      void invoke("set_float_bar_expanded", {
+        expanded: nextExpanded,
+        pinned: isPinnedEffective,
+      }).catch((e) => {
+        console.debug("Failed to set float bar expanded state:", e);
+      });
+    },
+    [pinned],
+  );
+
+  // 更新语言逻辑（直接内存更新，彻底阻断 invalidateQueries 造成的无限循环）
   const applyLanguage = useCallback(
     async (lang?: string) => {
       if (!lang) return;
-      setCurrentLang(lang);
+      setCurrentLang((prev) => (prev === lang ? prev : lang));
       syncLanguageFromSettings(lang);
-      try {
-        await i18n.changeLanguage(lang);
-      } catch (err) {
-        console.debug("Failed to change language:", err);
+      if (i18n.language !== lang) {
+        try {
+          await i18n.changeLanguage(lang);
+        } catch (err) {
+          console.debug("Failed to change language:", err);
+        }
       }
-      void queryClient.invalidateQueries({ queryKey: settingsKeys.all });
+      queryClient.setQueryData(settingsKeys.all, (old: Settings | undefined) => {
+        if (!old) return old;
+        return { ...old, language: lang };
+      });
     },
     [i18n],
   );
@@ -80,7 +107,7 @@ export function FloatBar() {
     }
   }, [settings?.floatBarEnabled]);
 
-  // 组件挂载时直接主动向后端查询一次最新设置（避免冷启动时由于 React Query 缓存尚未填充导致语言滞后）
+  // 组件首次挂载时直接从 SQLite 调取配置，校准语言状态
   useEffect(() => {
     void invoke<Settings>("get_settings")
       .then((s) => {
@@ -91,47 +118,33 @@ export function FloatBar() {
       .catch((err) => console.debug("Failed to query settings on float bar mount:", err));
   }, [applyLanguage]);
 
-  // 同步主窗口与后端的语言配置（来自 SQLite settings）
+  // 监听 settings 中语言字段的变动（带判等守卫）
   useEffect(() => {
-    if (settings?.language) {
+    if (settings?.language && settings.language !== currentLang) {
       void applyLanguage(settings.language);
     }
-  }, [settings?.language, applyLanguage]);
-
-  // 监听 i18n 自身语言切换回调
-  useEffect(() => {
-    const handleLangChange = (lng: string) => {
-      setCurrentLang(lng);
-    };
-    i18n.on("languageChanged", handleLangChange);
-    return () => {
-      i18n.off("languageChanged", handleLangChange);
-    };
-  }, [i18n]);
+  }, [settings?.language, currentLang, applyLanguage]);
 
   // 监听全通道语言切换广播事件（全局广播 + 针对本窗口的定向事件）
   useEffect(() => {
     let unlistenGlobal: (() => void) | undefined;
     let unlistenWin: (() => void) | undefined;
 
-    void listen<{ language: string }>("app-language-changed", (event) => {
+    const handler = (event: { payload?: { language?: string } }) => {
       const nextLang = event.payload?.language;
-      if (nextLang) {
+      if (nextLang && nextLang !== currentLang) {
         void applyLanguage(nextLang);
       }
-    }).then((fn) => {
+    };
+
+    void listen<{ language: string }>("app-language-changed", handler).then((fn) => {
       unlistenGlobal = fn;
     });
 
     try {
       const win = getCurrentWindow();
       void win
-        .listen<{ language: string }>("app-language-changed", (event) => {
-          const nextLang = event.payload?.language;
-          if (nextLang) {
-            void applyLanguage(nextLang);
-          }
-        })
+        .listen<{ language: string }>("app-language-changed", handler)
         .then((fn) => {
           unlistenWin = fn;
         });
@@ -143,7 +156,7 @@ export function FloatBar() {
       unlistenGlobal?.();
       unlistenWin?.();
     };
-  }, [applyLanguage]);
+  }, [currentLang, applyLanguage]);
 
   // 根据当前语言确定请求次数单位（中文: 次, 英文: reqs, 日文: 回）
   const activeLang = (currentLang || i18n.language || "zh").toLowerCase();
@@ -185,24 +198,15 @@ export function FloatBar() {
       .slice(0, 4);
   }, [appSummaries]);
 
-  // 同步 Rust 窗口大小与位置
-  const syncWindowExpanded = useCallback((nextExpanded: boolean) => {
-    void invoke("set_float_bar_expanded", { expanded: nextExpanded }).catch(
-      (e) => {
-        console.debug("Failed to set float bar expanded state:", e);
-      },
-    );
-  }, []);
-
   // 当外部 pinned 改变时联动展开状态
   useEffect(() => {
-    if (isPinned && !expanded) {
+    if (pinned && !expanded) {
       setExpanded(true);
-      syncWindowExpanded(true);
+      syncWindowExpanded(true, true);
     }
-  }, [isPinned, expanded, syncWindowExpanded]);
+  }, [pinned, expanded, syncWindowExpanded]);
 
-  // 鼠标移入指示条（只有进入该隐藏小条范围才触发）：立即展开
+  // 鼠标移入指示条：立即展开
   const handleMouseEnter = () => {
     if (collapseTimerRef.current) {
       clearTimeout(collapseTimerRef.current);
@@ -216,7 +220,7 @@ export function FloatBar() {
 
   // 鼠标移出整个胶囊：如果未锁定且开启自动贴边隐藏，延迟收起回微小指示条
   const handleMouseLeave = () => {
-    if (isPinned || !autoHide) return;
+    if (pinned || !autoHide) return;
     if (collapseTimerRef.current) {
       clearTimeout(collapseTimerRef.current);
     }
@@ -227,15 +231,18 @@ export function FloatBar() {
     }, 280);
   };
 
-  // 切换固定图钉
-  const togglePin = async (e: React.MouseEvent) => {
+  // 切换固定图钉：即时本地乐观更新，绝不卡死
+  const togglePin = (e: React.MouseEvent) => {
     e.stopPropagation();
-    const nextPinned = !isPinned;
-    await autoSaveSettings({ floatBarPinned: nextPinned });
-    if (nextPinned && !expanded) {
+    const nextPinned = !pinned;
+    setPinned(nextPinned);
+    if (nextPinned) {
       setExpanded(true);
-      syncWindowExpanded(true);
+      syncWindowExpanded(true, true);
+    } else {
+      syncWindowExpanded(expanded, false);
     }
+    void autoSaveSettings({ floatBarPinned: nextPinned });
   };
 
   // 打开主控制面板
@@ -260,10 +267,16 @@ export function FloatBar() {
     }
   };
 
-  // 隐藏/关闭悬浮栏
+  // 隐藏/关闭悬浮栏：立即响应隐藏，绝无任何等待
   const handleHideBar = (e: React.MouseEvent) => {
     e.stopPropagation();
-    void invoke("toggle_float_bar", { enabled: false });
+    try {
+      const win = getCurrentWindow();
+      void win.hide();
+    } catch (err) {
+      console.debug("Float bar direct hide error:", err);
+    }
+    void invoke("toggle_float_bar", { enabled: false }).catch(() => {});
   };
 
   return (
@@ -285,7 +298,10 @@ export function FloatBar() {
           data-tauri-drag-region
           onMouseEnter={handleMouseEnter}
           className="h-2.5 w-44 rounded-b-full px-2 flex items-center justify-center gap-1.5 cursor-pointer backdrop-blur-xl bg-zinc-900/90 dark:bg-zinc-900/90 light:bg-zinc-100/95 border-b border-x border-purple-500/30 shadow-[0_4px_16px_rgba(168,85,247,0.3)] hover:h-3.5 hover:w-48 hover:shadow-[0_6px_20px_rgba(168,85,247,0.5)] transition-all duration-200"
-          title={t("floatBar.hoverHint", { lng: currentLang, defaultValue: isEn ? "Hover to reveal usage statistics" : "悬停弹出用量统计条" })}
+          title={t("floatBar.hoverHint", {
+            lng: currentLang,
+            defaultValue: isEn ? "Hover to reveal usage statistics" : "悬停弹出用量统计条",
+          })}
         >
           <div className="flex items-center gap-1.5 pointer-events-none">
             <span className="h-1.5 w-1.5 rounded-full bg-purple-400 animate-pulse" />
@@ -297,7 +313,7 @@ export function FloatBar() {
         </div>
       </div>
 
-      {/* 2. 悬浮展开的精巧胶囊数据条 */}
+      {/* 2. 悬浮展开的精巧胶囊数据条（宽度扩展至 870px，宽裕容纳所有工具与按钮，绝不截断） */}
       <div
         data-tauri-drag-region
         onMouseEnter={handleMouseEnter}
@@ -309,18 +325,24 @@ export function FloatBar() {
       >
         <div
           data-tauri-drag-region
-          className="h-[44px] w-[718px] rounded-full px-3 flex items-center justify-between gap-2.5 backdrop-blur-2xl bg-zinc-950/90 dark:bg-zinc-950/90 light:bg-white/95 border border-white/12 dark:border-white/12 light:border-zinc-300 shadow-[0_12px_40px_rgba(0,0,0,0.45)] text-zinc-100 dark:text-zinc-100 light:text-zinc-800"
+          className="h-[44px] w-[870px] rounded-full px-3.5 flex items-center justify-between gap-2.5 backdrop-blur-2xl bg-zinc-950/90 dark:bg-zinc-950/90 light:bg-white/95 border border-white/12 dark:border-white/12 light:border-zinc-300 shadow-[0_12px_40px_rgba(0,0,0,0.45)] text-zinc-100 dark:text-zinc-100 light:text-zinc-800"
         >
           {/* 左侧：仅「今日」标识，去掉左侧小图标，点击打开主面板 */}
           <button
             type="button"
             className="flex items-center cursor-pointer shrink-0 outline-none"
             onClick={handleOpenMain}
-            title={t("floatBar.openMain", { lng: currentLang, defaultValue: isEn ? "Open main dashboard" : "点击打开用量主面板" })}
+            title={t("floatBar.openMain", {
+              lng: currentLang,
+              defaultValue: isEn ? "Open main dashboard" : "点击打开用量主面板",
+            })}
             style={NO_DRAG}
           >
             <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-purple-500/15 text-purple-400 dark:text-purple-300 light:text-purple-600 border border-purple-500/25 hover:bg-purple-500/25 transition-colors">
-              {t("floatBar.today", { lng: currentLang, defaultValue: isEn ? "Today" : "今日" })}
+              {t("floatBar.today", {
+                lng: currentLang,
+                defaultValue: isEn ? "Today" : "今日",
+              })}
             </span>
           </button>
 
@@ -332,7 +354,10 @@ export function FloatBar() {
             {/* 今日花费 */}
             <div
               className="flex items-center gap-1 shrink-0"
-              title={t("usage.cost", { lng: currentLang, defaultValue: isEn ? "Today's Cost" : "今日支出" })}
+              title={t("usage.cost", {
+                lng: currentLang,
+                defaultValue: isEn ? "Today's Cost" : "今日支出",
+              })}
             >
               <Coins className="h-3.5 w-3.5 text-emerald-400 dark:text-emerald-400 light:text-emerald-600 shrink-0" />
               <span className="font-mono text-sm font-bold tracking-tight text-emerald-400 dark:text-emerald-400 light:text-emerald-600">
@@ -345,7 +370,10 @@ export function FloatBar() {
             {/* Token 用量 */}
             <div
               className="flex items-center gap-1 shrink-0"
-              title={t("usage.tokens", { lng: currentLang, defaultValue: isEn ? "Total Tokens" : "Token 总量" })}
+              title={t("usage.tokens", {
+                lng: currentLang,
+                defaultValue: isEn ? "Total Tokens" : "Token 总量",
+              })}
             >
               <Cpu className="h-3.5 w-3.5 text-indigo-400 dark:text-indigo-400 light:text-indigo-600 shrink-0" />
               <span className="font-mono text-xs font-semibold">
@@ -361,7 +389,10 @@ export function FloatBar() {
             {/* 请求次数（多语言单位支持） */}
             <div
               className="flex items-center gap-1 shrink-0"
-              title={t("usage.requests", { lng: currentLang, defaultValue: isEn ? "Total Requests" : "调用请求数" })}
+              title={t("usage.requests", {
+                lng: currentLang,
+                defaultValue: isEn ? "Total Requests" : "调用请求数",
+              })}
             >
               <Layers className="h-3.5 w-3.5 text-sky-400 dark:text-sky-400 light:text-sky-600 shrink-0" />
               <span className="font-mono text-xs font-medium">
@@ -397,7 +428,7 @@ export function FloatBar() {
           {/* 独立分割线：确保工具徽章和右侧按钮绝对隔离 */}
           <div className="h-3.5 w-px bg-white/10 dark:bg-white/10 light:bg-black/10 shrink-0" />
 
-          {/* 右侧：快捷操作按钮（独立成组，带 no-drag，绝无重叠） */}
+          {/* 右侧：快捷操作按钮（独立成组，绝对防挤压 shrink-0，带 no-drag，绝无重叠） */}
           <div className="flex items-center gap-0.5 shrink-0" style={NO_DRAG}>
             {/* 立即同步 */}
             <button
@@ -407,27 +438,36 @@ export function FloatBar() {
               className={`p-1.5 rounded-full hover:bg-white/10 dark:hover:bg-white/10 light:hover:bg-black/10 text-zinc-400 hover:text-zinc-100 transition-colors shrink-0 ${
                 isSyncing ? "text-purple-400" : ""
               }`}
-              title={t("floatBar.syncNow", { lng: currentLang, defaultValue: isEn ? "Sync latest session usage now" : "立即同步最新会话用量" })}
+              title={t("floatBar.syncNow", {
+                lng: currentLang,
+                defaultValue: isEn ? "Sync latest session usage now" : "立即同步最新会话用量",
+              })}
             >
               <RefreshCw className={`h-3.5 w-3.5 ${isSyncing ? "animate-spin" : ""}`} />
             </button>
 
-            {/* 固定 / 取消固定 */}
+            {/* 固定 / 取消固定（不隐藏按钮） */}
             <button
               type="button"
               onClick={togglePin}
               className={`p-1.5 rounded-full hover:bg-white/10 dark:hover:bg-white/10 light:hover:bg-black/10 transition-colors shrink-0 ${
-                isPinned
+                pinned
                   ? "text-purple-400 bg-purple-500/20"
                   : "text-zinc-400 hover:text-zinc-100"
               }`}
               title={
-                isPinned
-                  ? t("floatBar.unpin", { lng: currentLang, defaultValue: isEn ? "Unpin float bar (auto-hide to top edge)" : "取消固定（恢复贴边隐藏）" })
-                  : t("floatBar.pin", { lng: currentLang, defaultValue: isEn ? "Pin float bar (keep expanded)" : "固定常驻显示（不自动收起）" })
+                pinned
+                  ? t("floatBar.unpin", {
+                      lng: currentLang,
+                      defaultValue: isEn ? "Unpin float bar (auto-hide to top edge)" : "取消固定（恢复贴边隐藏）",
+                    })
+                  : t("floatBar.pin", {
+                      lng: currentLang,
+                      defaultValue: isEn ? "Pin float bar (keep expanded)" : "固定常驻显示（不自动收起）",
+                    })
               }
             >
-              {isPinned ? <Pin className="h-3.5 w-3.5" /> : <PinOff className="h-3.5 w-3.5" />}
+              {pinned ? <Pin className="h-3.5 w-3.5" /> : <PinOff className="h-3.5 w-3.5" />}
             </button>
 
             {/* 展开完整面板 */}
@@ -435,7 +475,10 @@ export function FloatBar() {
               type="button"
               onClick={handleOpenMain}
               className="p-1.5 rounded-full hover:bg-white/10 dark:hover:bg-white/10 light:hover:bg-black/10 text-zinc-400 hover:text-zinc-100 transition-colors shrink-0"
-              title={t("floatBar.openFullDashboard", { lng: currentLang, defaultValue: isEn ? "Expand full usage dashboard" : "展开用量统计主窗口" })}
+              title={t("floatBar.openFullDashboard", {
+                lng: currentLang,
+                defaultValue: isEn ? "Expand full usage dashboard" : "展开用量统计主窗口",
+              })}
             >
               <Maximize2 className="h-3.5 w-3.5" />
             </button>
@@ -445,7 +488,10 @@ export function FloatBar() {
               type="button"
               onClick={handleHideBar}
               className="p-1.5 rounded-full hover:bg-red-500/20 hover:text-red-400 text-zinc-400 transition-colors shrink-0"
-              title={t("floatBar.hide", { lng: currentLang, defaultValue: isEn ? "Hide float bar (re-enable via tray or settings)" : "隐藏桌面悬浮顶栏（可在托盘或设置中重新开启）" })}
+              title={t("floatBar.hide", {
+                lng: currentLang,
+                defaultValue: isEn ? "Hide float bar (re-enable via tray or settings)" : "隐藏桌面悬浮顶栏（可在托盘或设置中重新开启）",
+              })}
             >
               <X className="h-3.5 w-3.5" />
             </button>
