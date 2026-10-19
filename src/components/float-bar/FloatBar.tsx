@@ -22,6 +22,27 @@ import type { AppId } from "@/types";
 import type { UsageRangeSelection } from "@/types/usage";
 import { usageApi } from "@/lib/api/usage";
 
+const TOOL_SHORT_NAME: Record<string, string> = {
+  claude: "Claude",
+  "claude-desktop": "Claude",
+  codex: "Codex",
+  gemini: "Agy",
+  dsh: "DSH",
+  grokbuild: "Grok",
+  opencode: "OpenCode",
+  pi: "Pi",
+  mcode: "MiniMax",
+};
+
+const CORE_TOOL_ORDER: Record<string, number> = {
+  claude: 1,
+  codex: 2,
+  gemini: 3,
+  dsh: 4,
+};
+
+const NO_DRAG = { WebkitAppRegion: "no-drag" } as React.CSSProperties;
+
 export function FloatBar() {
   const { t } = useTranslation();
   const { settings, autoSaveSettings } = useSettings();
@@ -49,7 +70,7 @@ export function FloatBar() {
   const totalTokensNum = summary?.realTotalTokens ?? 0;
   const totalReqsNum = summary?.totalRequests ?? 0;
 
-  // 排序前几位活跃应用（按消费或 Token 降序）
+  // 排序前几位活跃应用：核心工具（Claude/Codex/Agy/DSH）优先排列，确保 DSH 稳固展示
   const activeApps = useMemo(() => {
     if (!appSummaries) return [];
     return appSummaries
@@ -60,8 +81,12 @@ export function FloatBar() {
         requests: item.summary.totalRequests,
       }))
       .filter((item) => item.requests > 0 || item.tokens > 0 || item.cost > 0)
-      .sort((a, b) => b.cost - a.cost || b.tokens - a.tokens)
-      .slice(0, 4);
+      .sort((a, b) => {
+        const orderA = CORE_TOOL_ORDER[a.appType] ?? 99;
+        const orderB = CORE_TOOL_ORDER[b.appType] ?? 99;
+        if (orderA !== orderB) return orderA - orderB;
+        return b.cost - a.cost;
+      });
   }, [appSummaries]);
 
   // 同步 Rust 窗口高度
@@ -162,7 +187,7 @@ export function FloatBar() {
       >
         <div
           data-tauri-drag-region
-          className="h-2.5 w-44 rounded-b-full px-2 flex items-center justify-center gap-1.5 cursor-pointer backdrop-blur-xl bg-zinc-900/90 dark:bg-zinc-900/90 light:bg-zinc-100/95 border-b border-x border-purple-500/30 shadow-[0_4px_16px_rgba(168,85,247,0.3)] hover:h-3.5 hover:w-48 hover:shadow-[0_6px_20px_rgba(168,85,247,0.5)] transition-all duration-200"
+          className="h-2.5 w-48 rounded-b-full px-2 flex items-center justify-center gap-1.5 cursor-pointer backdrop-blur-xl bg-zinc-900/90 dark:bg-zinc-900/90 light:bg-zinc-100/95 border-b border-x border-purple-500/30 shadow-[0_4px_16px_rgba(168,85,247,0.3)] hover:h-3.5 hover:w-52 hover:shadow-[0_6px_20px_rgba(168,85,247,0.5)] transition-all duration-200"
           title={t("floatBar.hoverHint", { defaultValue: "悬停弹出用量统计条" })}
         >
           <div className="flex items-center gap-1.5 pointer-events-none">
@@ -175,7 +200,7 @@ export function FloatBar() {
         </div>
       </div>
 
-      {/* 2. 悬浮展开的胶囊数据条 */}
+      {/* 2. 悬浮展开的宽幅胶囊数据条 */}
       <div
         data-tauri-drag-region
         className={`absolute top-1.5 transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] ${
@@ -186,14 +211,14 @@ export function FloatBar() {
       >
         <div
           data-tauri-drag-region
-          className="h-[44px] w-[624px] rounded-full px-3.5 flex items-center justify-between gap-3 backdrop-blur-2xl bg-zinc-950/90 dark:bg-zinc-950/90 light:bg-white/95 border border-white/12 dark:border-white/12 light:border-zinc-300 shadow-[0_12px_40px_rgba(0,0,0,0.45)] text-zinc-100 dark:text-zinc-100 light:text-zinc-800"
+          className="h-[44px] w-[856px] rounded-full px-3.5 flex items-center justify-between gap-3 backdrop-blur-2xl bg-zinc-950/92 dark:bg-zinc-950/92 light:bg-white/95 border border-white/12 dark:border-white/12 light:border-zinc-300 shadow-[0_12px_40px_rgba(0,0,0,0.5)] text-zinc-100 dark:text-zinc-100 light:text-zinc-800"
         >
           {/* 左侧：Logo 与今日标识 */}
           <div
-            data-tauri-drag-region
             className="flex items-center gap-2 cursor-pointer shrink-0"
             onClick={handleOpenMain}
             title={t("floatBar.openMain", { defaultValue: "点击打开用量主面板" })}
+            style={NO_DRAG}
           >
             <div className="relative flex items-center justify-center h-5 w-5 rounded-md bg-gradient-to-tr from-purple-600 to-indigo-500 shadow-sm text-white">
               <Activity className="h-3 w-3" />
@@ -206,7 +231,9 @@ export function FloatBar() {
             </span>
           </div>
 
-          {/* 中间核心统计区（整行可拖动） */}
+          <div className="h-3.5 w-px bg-white/10 dark:bg-white/10 light:bg-black/10 shrink-0" />
+
+          {/* 中间核心统计区（整行可拖拽，各项不缩水） */}
           <div
             data-tauri-drag-region
             className="flex items-center gap-3.5 flex-1 justify-center min-w-0 px-1 cursor-grab"
@@ -254,19 +281,22 @@ export function FloatBar() {
               </span>
             </div>
 
-            {/* 各工具徽章 */}
+            {/* 各工具徽章（Claude / Codex / Agy / DSH 清晰排列） */}
             {activeApps.length > 0 && (
               <>
                 <div className="h-3.5 w-px bg-white/10 dark:bg-white/10 light:bg-black/10 shrink-0" />
-                <div className="flex items-center gap-1.5 overflow-hidden shrink-0">
+                <div className="flex items-center gap-2 shrink-0">
                   {activeApps.map((app) => (
                     <div
                       key={app.appType}
-                      className="flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-white/5 dark:bg-white/5 light:bg-black/5 border border-white/8 dark:border-white/8 light:border-black/5 text-[10px] font-mono"
-                      title={`${app.appType.toUpperCase()}: ${money(app.cost, 2)} · ${formatTokensCompact(app.tokens)} tokens · ${app.requests} 次`}
+                      className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-white/5 dark:bg-white/5 light:bg-black/5 border border-white/10 dark:border-white/10 light:border-black/10 text-[11px] font-mono shrink-0"
+                      title={`${TOOL_SHORT_NAME[app.appType] || app.appType.toUpperCase()}: ${money(app.cost, 2)} · ${formatTokensCompact(app.tokens)} tokens · ${app.requests} 次`}
                     >
                       <AppGlyph app={app.appType as AppId} size={13} />
-                      <span className="font-semibold text-zinc-300 dark:text-zinc-300 light:text-zinc-700">
+                      <span className="text-[10px] font-semibold text-zinc-400 dark:text-zinc-400 light:text-zinc-500">
+                        {TOOL_SHORT_NAME[app.appType] || app.appType}
+                      </span>
+                      <span className="font-semibold text-zinc-200 dark:text-zinc-200 light:text-zinc-800">
                         {money(app.cost, 2)}
                       </span>
                     </div>
@@ -276,14 +306,16 @@ export function FloatBar() {
             )}
           </div>
 
-          {/* 右侧：快捷操作按钮 */}
-          <div className="flex items-center gap-1 shrink-0">
+          <div className="h-3.5 w-px bg-white/10 dark:bg-white/10 light:bg-black/10 shrink-0" />
+
+          {/* 右侧：快捷操作按钮（不重叠、无拖拽拦截） */}
+          <div className="flex items-center gap-1 shrink-0" style={NO_DRAG}>
             {/* 立即同步 */}
             <button
               type="button"
               onClick={handleSyncNow}
               disabled={isSyncing}
-              className={`p-1.5 rounded-full hover:bg-white/10 dark:hover:bg-white/10 light:hover:bg-black/10 text-zinc-400 hover:text-zinc-100 transition-colors ${
+              className={`p-1.5 rounded-full hover:bg-white/10 dark:hover:bg-white/10 light:hover:bg-black/10 text-zinc-400 hover:text-zinc-100 transition-colors shrink-0 ${
                 isSyncing ? "text-purple-400" : ""
               }`}
               title={t("floatBar.syncNow", { defaultValue: "立即同步最新会话用量" })}
@@ -295,7 +327,7 @@ export function FloatBar() {
             <button
               type="button"
               onClick={togglePin}
-              className={`p-1.5 rounded-full hover:bg-white/10 dark:hover:bg-white/10 light:hover:bg-black/10 transition-colors ${
+              className={`p-1.5 rounded-full hover:bg-white/10 dark:hover:bg-white/10 light:hover:bg-black/10 transition-colors shrink-0 ${
                 isPinned
                   ? "text-purple-400 bg-purple-500/20"
                   : "text-zinc-400 hover:text-zinc-100"
@@ -313,7 +345,7 @@ export function FloatBar() {
             <button
               type="button"
               onClick={handleOpenMain}
-              className="p-1.5 rounded-full hover:bg-white/10 dark:hover:bg-white/10 light:hover:bg-black/10 text-zinc-400 hover:text-zinc-100 transition-colors"
+              className="p-1.5 rounded-full hover:bg-white/10 dark:hover:bg-white/10 light:hover:bg-black/10 text-zinc-400 hover:text-zinc-100 transition-colors shrink-0"
               title={t("floatBar.openFullDashboard", { defaultValue: "展开用量统计主窗口" })}
             >
               <Maximize2 className="h-3.5 w-3.5" />
@@ -323,7 +355,7 @@ export function FloatBar() {
             <button
               type="button"
               onClick={handleHideBar}
-              className="p-1.5 rounded-full hover:bg-red-500/20 hover:text-red-400 text-zinc-400 transition-colors"
+              className="p-1.5 rounded-full hover:bg-red-500/20 hover:text-red-400 text-zinc-400 transition-colors shrink-0"
               title={t("floatBar.hide", { defaultValue: "隐藏桌面悬浮顶栏（可在托盘或设置中重新开启）" })}
             >
               <X className="h-3.5 w-3.5" />
