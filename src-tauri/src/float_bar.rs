@@ -84,6 +84,7 @@ pub fn align_float_bar_to_screen(
 
     let _ = window.set_size(LogicalSize::new(width, height));
     let _ = window.set_position(LogicalPosition::new(target_x, target_y));
+    let _ = window.set_shadow(false);
 }
 
 /// 启动时初始化悬浮条窗口（默认开启显示）
@@ -94,6 +95,7 @@ pub fn setup_float_bar(app: &AppHandle) {
     };
 
     let _ = window.set_decorations(false);
+    let _ = window.set_shadow(false);
     let _ = window.set_always_on_top(true);
     let _ = window.set_skip_taskbar(true);
 
@@ -183,6 +185,7 @@ pub async fn toggle_float_bar(app: AppHandle, enabled: Option<bool>) -> Result<b
     if new_enabled {
         align_float_bar_to_screen(&window, &current_settings.float_bar_position, current_settings.float_bar_pinned, None);
         let _ = window.show();
+        let _ = window.set_shadow(false);
         let _ = window.set_always_on_top(true);
         let _ = window.set_skip_taskbar(true);
     } else {

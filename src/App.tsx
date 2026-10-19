@@ -43,6 +43,9 @@ export default function App() {
         setIsFloatWindow(true);
         document.documentElement.classList.add("float-window");
         document.body.classList.add("float-window");
+        void win.setShadow(false).catch((error) => {
+          console.debug("Failed to disable float bar shadow:", error);
+        });
         return;
       }
     } catch (e) {

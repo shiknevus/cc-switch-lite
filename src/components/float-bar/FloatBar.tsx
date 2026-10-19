@@ -313,7 +313,7 @@ export function FloatBar() {
         <div
           data-tauri-drag-region
           onMouseEnter={handleMouseEnter}
-          className="h-2.5 w-44 rounded-b-full px-2 flex items-center justify-center gap-1.5 cursor-pointer backdrop-blur-xl bg-zinc-900/90 dark:bg-zinc-900/90 light:bg-zinc-100/95 border-b border-x border-purple-500/30 hover:h-3.5 hover:w-48 transition-all duration-200"
+          className="h-2.5 w-44 rounded-b-full px-2 flex items-center justify-center gap-1.5 cursor-pointer bg-zinc-900/95 dark:bg-zinc-900/95 light:bg-zinc-100 border-b border-x border-purple-500/30 shadow-none drop-shadow-none hover:h-3.5 hover:w-48 transition-all duration-200"
           title={t("floatBar.hoverHint", {
             lng: currentLang,
             defaultValue: isEn ? "Hover to reveal usage statistics" : "悬停弹出用量统计条",
@@ -329,7 +329,7 @@ export function FloatBar() {
         </div>
       </div>
 
-      {/* 2. 悬浮展开的精巧胶囊数据条（宽度紧凑贴合内容，绝无多余大空白，无外围阴影） */}
+      {/* 2. 悬浮展开的精巧胶囊数据条（宽度紧凑贴合内容，绝无多余大空白，完全无阴影） */}
       <div
         data-tauri-drag-region
         onMouseEnter={handleMouseEnter}
@@ -342,7 +342,7 @@ export function FloatBar() {
         <div
           data-tauri-drag-region
           style={{ width: `${dynamicExpandedWidth - 8}px` }}
-          className="h-[40px] rounded-full px-2.5 flex items-center justify-between gap-2 backdrop-blur-2xl bg-zinc-950/90 dark:bg-zinc-950/90 light:bg-white/95 border border-white/12 dark:border-white/12 light:border-zinc-300 text-zinc-100 dark:text-zinc-100 light:text-zinc-800"
+          className="h-[40px] rounded-full px-2.5 flex items-center justify-between gap-2 bg-zinc-950/95 dark:bg-zinc-950/95 light:bg-white border border-white/12 dark:border-white/12 light:border-zinc-300 shadow-none drop-shadow-none text-zinc-100 dark:text-zinc-100 light:text-zinc-800"
         >
           {/* 左侧：仅「今日」标识，去掉左侧小图标，点击打开主面板 */}
           <button
