@@ -954,7 +954,7 @@ export function UsageDashboard({
     <div ref={containerRef} className="flex min-h-0 min-w-0 flex-1 flex-col">
       <AppPageHeader
         icon={<ChartColumn className="h-5 w-5" strokeWidth={1.5} />}
-        title=""
+        title="CC Switch Lite"
         actions={headerActions}
       />
       {filterRow}
