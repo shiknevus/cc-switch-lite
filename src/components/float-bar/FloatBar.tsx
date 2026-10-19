@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -88,13 +88,101 @@ export function FloatBar() {
       .slice(0, 4);
   }, [appSummaries]);
 
-  // 根据激活工具数量动态计算紧凑展开宽度（紧凑精致，绝无冗余大空白）
+  // 根据当前语言确定请求次数单位（中文: 次, 英文: reqs, 日文: 回）
+  const activeLang = (currentLang || i18n.language || "zh").toLowerCase();
+  const isEn = activeLang.startsWith("en");
+  const isJa = activeLang.startsWith("ja");
+
+  const reqUnit = useMemo(() => {
+    if (isEn) return "reqs";
+    if (isJa) return "回";
+    return "次";
+  }, [isEn, isJa]);
+
+  // 胶囊 DOM 引用，用于动态精确测量真实排版宽度
+  const capsuleRef = useRef<HTMLDivElement>(null);
+  const [measuredCapsuleWidth, setMeasuredCapsuleWidth] = useState<number>(0);
+
+  // 监听胶囊 DOM 真实渲染宽度（毫秒级自适应文字与徽章变化）
+  useLayoutEffect(() => {
+    const el = capsuleRef.current;
+    if (!el) return;
+
+    const measure = () => {
+      // scrollWidth 为真实内容完整宽度
+      const w = el.scrollWidth || el.offsetWidth;
+      if (w > 100) {
+        setMeasuredCapsuleWidth((prev) => (Math.abs(prev - w) >= 2 ? w : prev));
+      }
+    };
+
+    measure();
+
+    let ro: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== "undefined") {
+      ro = new ResizeObserver(() => {
+        measure();
+      });
+      ro.observe(el);
+    }
+
+    return () => {
+      ro?.disconnect();
+    };
+  }, [activeApps, summary, currentLang, totalCostNum, totalTokensNum, totalReqsNum]);
+
+  // 基于实际内容的特征预估宽度（首帧或 DOM 尚未完成测量时的瞬间兜底）
+  const contentEstimatedWidth = useMemo(() => {
+    // 1. 左侧“今日”标签 + 间距 + 分割线
+    const todayLabelWidth = isEn ? 52.0 : isJa ? 46.0 : 42.0;
+    const todaySection = todayLabelWidth + 8.0 + 1.0 + 8.0;
+
+    // 2. 今日花费：图标(14) + gap(4) + 字符宽度
+    const costStr = money(totalCostNum, 2);
+    const costSection = 18.0 + costStr.length * 7.5;
+
+    // 3. Token 用量：分割线(1) + gap(8) + 图标(14) + gap(4) + 字符宽度 + 'tk'(16)
+    const tokenStr = formatTokensCompact(totalTokensNum);
+    const tokenSection = 9.0 + 18.0 + tokenStr.length * 7.5 + 16.0;
+
+    // 4. 请求次数：分割线(1) + gap(8) + 图标(14) + gap(4) + 字符宽度 + 单位
+    const reqStr = String(totalReqsNum);
+    const unitWidth = isEn ? 28.0 : 16.0;
+    const reqSection = 9.0 + 18.0 + reqStr.length * 7.5 + unitWidth;
+
+    // 5. 各工具徽章宽度
+    let appsSection = 0;
+    if (activeApps.length > 0) {
+      appsSection += 9.0;
+      for (const app of activeApps) {
+        const appCostStr = money(app.cost, 2);
+        appsSection += 12.0 + 4.0 + appCostStr.length * 7.5 + 14.0 + 4.0;
+      }
+    }
+
+    // 6. 右侧 4 个操作按钮组：分割线(1) + gap(8) + 4 个按钮(各约 22px) + gap(2px*3)
+    const actionsSection = 9.0 + (4 * 22.0 + 6.0);
+
+    // 7. 胶囊内边距 px-2.5 (20px)
+    const capsulePadding = 20.0;
+
+    return Math.ceil(
+      todaySection +
+        costSection +
+        tokenSection +
+        reqSection +
+        appsSection +
+        actionsSection +
+        capsulePadding,
+    );
+  }, [isEn, isJa, totalCostNum, totalTokensNum, totalReqsNum, activeApps, money]);
+
+  // 最终动态展开窗口宽度（内容宽度 + 8px 安全呼吸边距，左右各留 4px）
   const dynamicExpandedWidth = useMemo(() => {
-    const baseWidth = 430.0;
-    const count = Math.min(activeApps.length, 4);
-    if (count === 0) return baseWidth;
-    return baseWidth + count * 68.0 + 8.0;
-  }, [activeApps.length]);
+    const rawWidth =
+      measuredCapsuleWidth > 150 ? measuredCapsuleWidth : contentEstimatedWidth;
+    return Math.max(360.0, Math.ceil(rawWidth + 8.0));
+  }, [measuredCapsuleWidth, contentEstimatedWidth]);
 
   // 同步 Rust 窗口大小与位置（带自适应紧凑宽度）
   const syncWindowExpanded = useCallback(
@@ -202,17 +290,6 @@ export function FloatBar() {
       unlistenWin?.();
     };
   }, [currentLang, applyLanguage]);
-
-  // 根据当前语言确定请求次数单位（中文: 次, 英文: reqs, 日文: 回）
-  const activeLang = (currentLang || i18n.language || "zh").toLowerCase();
-  const isEn = activeLang.startsWith("en");
-  const isJa = activeLang.startsWith("ja");
-
-  const reqUnit = useMemo(() => {
-    if (isEn) return "reqs";
-    if (isJa) return "回";
-    return "次";
-  }, [isEn, isJa]);
 
   // 当外部 pinned 改变时联动展开状态
   useEffect(() => {
@@ -333,16 +410,17 @@ export function FloatBar() {
       <div
         data-tauri-drag-region
         onMouseEnter={handleMouseEnter}
-        className={`absolute top-1 transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] ${
+        className={`absolute top-1 flex justify-center transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] ${
           expanded
             ? "opacity-100 pointer-events-auto translate-y-0 scale-100"
             : "opacity-0 pointer-events-none -translate-y-6 scale-95"
         }`}
       >
         <div
+          ref={capsuleRef}
           data-tauri-drag-region
           style={{ width: `${dynamicExpandedWidth - 8}px` }}
-          className="h-[40px] rounded-full px-2.5 flex items-center justify-between gap-2 bg-zinc-950/95 dark:bg-zinc-950/95 light:bg-white border border-white/12 dark:border-white/12 light:border-zinc-300 shadow-none drop-shadow-none text-zinc-100 dark:text-zinc-100 light:text-zinc-800"
+          className="h-[40px] rounded-full px-2.5 flex items-center justify-between gap-2 bg-zinc-950/95 dark:bg-zinc-950/95 light:bg-white border border-white/12 dark:border-white/12 light:border-zinc-300 shadow-none drop-shadow-none text-zinc-100 dark:text-zinc-100 light:text-zinc-800 transition-[width] duration-200"
         >
           {/* 左侧：仅「今日」标识，去掉左侧小图标，点击打开主面板 */}
           <button
@@ -363,10 +441,12 @@ export function FloatBar() {
             </span>
           </button>
 
+          <div className="h-3 w-px bg-white/10 dark:bg-white/10 light:bg-black/10 shrink-0" />
+
           {/* 中间核心统计区（紧凑排列，无冗余空隙） */}
           <div
             data-tauri-drag-region
-            className="flex items-center gap-2 flex-1 justify-center min-w-0 px-0.5 cursor-grab"
+            className="flex items-center gap-2 shrink-0 px-0.5 cursor-grab"
           >
             {/* 今日花费 */}
             <div
@@ -428,11 +508,11 @@ export function FloatBar() {
                   {activeApps.map((app) => (
                     <div
                       key={app.appType}
-                      className="flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-white/5 dark:bg-white/5 light:bg-black/5 border border-white/8 dark:border-white/8 light:border-black/5 text-[10px] font-mono shrink-0"
+                      className="flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-white/5 dark:bg-white/5 light:bg-black/5 border border-white/8 dark:border-white/8 light:border-black/5 font-mono shrink-0"
                       title={`${app.appType.toUpperCase()}: ${money(app.cost, 2)} · ${formatTokensCompact(app.tokens)} tokens · ${app.requests} ${reqUnit}`}
                     >
                       <AppGlyph app={app.appType as AppId} size={12} />
-                      <span className="font-semibold text-zinc-300 dark:text-zinc-300 light:text-zinc-700">
+                      <span className="text-xs font-semibold text-zinc-300 dark:text-zinc-300 light:text-zinc-700">
                         {money(app.cost, 2)}
                       </span>
                     </div>
