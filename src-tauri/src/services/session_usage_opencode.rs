@@ -20,8 +20,9 @@ use crate::opencode_config::get_opencode_db_path;
 use crate::proxy::usage::calculator::CostCalculator;
 use crate::proxy::usage::parser::TokenUsage;
 use crate::services::session_usage::{
-    metadata_modified_nanos, update_sync_state, SessionSyncResult,
+    metadata_modified_nanos, update_sync_state_with_importer, SessionSyncResult,
 };
+use crate::services::sql_helpers::INPUT_TOKEN_SEMANTICS_FRESH;
 use crate::services::usage_stats::{find_model_pricing, should_skip_session_insert, DedupKey};
 use rust_decimal::Decimal;
 use std::fs;
@@ -200,7 +201,7 @@ pub fn sync_opencode_usage(db: &Database) -> Result<SessionSyncResult, AppError>
         }
 
         // 更新会话级同步状态。失败时不要推进文件级状态，确保下次可重试。
-        if let Err(e) = update_sync_state(db, &sync_key, *time_updated, 0) {
+        if let Err(e) = update_sync_state_with_importer(db, &sync_key, *time_updated, 0, Some("opencode")) {
             let msg = format!("OpenCode 会话同步状态更新失败 {session_id}: {e}");
             log::warn!("[OPENCODE-SYNC] {msg}");
             result.errors.push(msg);
@@ -210,7 +211,7 @@ pub fn sync_opencode_usage(db: &Database) -> Result<SessionSyncResult, AppError>
 
     // 仅在本轮完全成功时推进文件级状态；否则保留下次重试入口。
     if !has_sync_errors {
-        update_sync_state(db, &db_path_str, file_modified, 0)?;
+        update_sync_state_with_importer(db, &db_path_str, file_modified, 0, Some("opencode"))?;
     }
 
     if result.imported > 0 {
@@ -525,8 +526,9 @@ fn insert_opencode_message(
             input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
             input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd, total_cost_usd,
             latency_ms, first_token_ms, status_code, error_message, session_id,
-            provider_type, is_streaming, cost_multiplier, created_at, data_source
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
+            provider_type, is_streaming, cost_multiplier, created_at, data_source,
+            input_token_semantics
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
         rusqlite::params![
             request_id,
             "_opencode_session",   // provider_id
@@ -553,6 +555,7 @@ fn insert_opencode_message(
             "1.0",                 // cost_multiplier
             created_at,
             "opencode_session",    // data_source
+            INPUT_TOKEN_SEMANTICS_FRESH, // input_token_semantics: OpenCode input_tokens 不包含 cache
         ],
     )
     .map_err(|e| AppError::Database(format!("插入 OpenCode 会话日志失败: {e}")))?;

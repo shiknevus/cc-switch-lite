@@ -10,7 +10,10 @@ export function useTauriEvent<P>(
   handler: (payload: P) => void | Promise<void>,
 ): void {
   const handlerRef = useRef(handler);
-  handlerRef.current = handler;
+
+  useEffect(() => {
+    handlerRef.current = handler;
+  });
 
   useEffect(() => {
     let disposed = false;
@@ -37,3 +40,4 @@ export function useTauriEvent<P>(
     };
   }, [eventName]);
 }
+

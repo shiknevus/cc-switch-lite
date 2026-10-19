@@ -529,6 +529,7 @@ fn parse_event_timestamp(value: Option<&serde_json::Value>) -> Option<i64> {
 }
 
 /// 插入单条 Grok 会话记录到 proxy_request_logs
+#[allow(clippy::too_many_arguments)]
 fn insert_grok_session_entry(
     db: &Database,
     request_id: &str,

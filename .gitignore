@@ -15,3 +15,5 @@ Thumbs.db
 /.cc-switch
 /.idea
 /.vscode
+vite.config.d.ts
+vite.config.js

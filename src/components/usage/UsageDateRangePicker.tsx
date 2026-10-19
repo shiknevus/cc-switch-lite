@@ -92,6 +92,8 @@ function setDateKeepTime(ts: number, day: Date): number {
   );
 }
 
+const MAX_CUSTOM_RANGE_SECONDS = 30 * 24 * 60 * 60;
+
 function getCalendarDays(month: Date): Date[] {
   const first = new Date(month.getFullYear(), month.getMonth(), 1);
   const gridStart = new Date(first);
@@ -239,6 +241,10 @@ export function UsageDateRangePicker({
     setError(null);
     if (draftStart > draftEnd) {
       setError(t("usage.invalidTimeRangeOrder", "开始时间不能晚于结束时间"));
+      return;
+    }
+    if (draftEnd - draftStart > MAX_CUSTOM_RANGE_SECONDS) {
+      setError(t("usage.customRangeTooLong", "自定义时间范围不能超过 30 天"));
       return;
     }
     onApply({
@@ -493,7 +499,8 @@ export function UsageDateRangePicker({
             <div className="grid grid-cols-7 gap-px">
               {calendarDays.map((day) => {
                 const isCurrentMonth =
-                  day.getMonth() === displayMonth.getMonth();
+                  day.getMonth() === displayMonth.getMonth() &&
+                  day.getFullYear() === displayMonth.getFullYear();
                 const isToday = isSameDay(day, today);
                 const isStart = isSameDay(day, startDay);
                 const isEnd = isSameDay(day, endDay);

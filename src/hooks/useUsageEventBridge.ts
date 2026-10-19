@@ -1,48 +1,18 @@
-import { useEffect } from "react";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useQueryClient } from "@tanstack/react-query";
+import { useTauriEvent } from "@/hooks/useTauriEvent";
 import { usageKeys } from "@/lib/query/usage";
 
-/**
- * 监听后端 `usage-log-recorded` 事件，收到后立刻 invalidate 所有
- * UsageDashboard 相关查询。用量页不再定时轮询，统计全靠它刷新。
- *
- * 后端在 `proxy_request_logs` 写入新行时会 emit 该事件（200ms 防抖合并），
- * 来源覆盖代理日志、Claude/Codex/Gemini 会话同步、启动归档。
- *
- * 该 hook 只挂在 UsageDashboard 上，避免在主界面其他位置无意义触发。
- */
+/** Invalidate usage queries when the backend imports new rows or completes a scan. */
 export function useUsageEventBridge() {
   const queryClient = useQueryClient();
 
-  useEffect(() => {
-    let unlisten: UnlistenFn | undefined;
-    let disposed = false;
+  useTauriEvent("usage-log-recorded", () => {
+    void queryClient.invalidateQueries({ queryKey: usageKeys.all });
+  });
 
-    (async () => {
-      const off = await listen("usage-log-recorded", () => {
-        queryClient.invalidateQueries({ queryKey: usageKeys.all });
-      });
-      const offSync = await listen("usage-sync-finished", () => {
-        queryClient.invalidateQueries({
-          queryKey: [...usageKeys.all, "session-last-sync"],
-        });
-      });
-
-      if (disposed) {
-        off();
-        offSync();
-      } else {
-        unlisten = () => {
-          off();
-          offSync();
-        };
-      }
-    })();
-
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, [queryClient]);
+  useTauriEvent("usage-sync-finished", () => {
+    void queryClient.invalidateQueries({
+      queryKey: [...usageKeys.all, "session-last-sync"],
+    });
+  });
 }

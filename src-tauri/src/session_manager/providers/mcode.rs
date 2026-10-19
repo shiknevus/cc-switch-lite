@@ -18,4 +18,3 @@ pub fn scan_sessions() -> Vec<crate::session_manager::SessionMeta> {
 pub fn load_messages(_path: &str) -> Result<Vec<()>, String> {
     Ok(Vec::new())
 }
-

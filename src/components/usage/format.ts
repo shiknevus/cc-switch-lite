@@ -1,25 +1,34 @@
 import type { UsageDisplaySettings } from "@/types";
+
 export function parseFiniteNumber(value: unknown): number | null {
   if (typeof value === "number") {
     return Number.isFinite(value) ? value : null;
   }
-
   if (typeof value === "string") {
-    const parsed = Number.parseFloat(value);
+    const trimmed = value.trim();
+    if (trimmed === "") return null;
+    const parsed = Number(trimmed);
     return Number.isFinite(parsed) ? parsed : null;
   }
-
   return null;
 }
 
-export function fmtInt(
-  value: unknown,
-  locale?: string,
-  fallback: string = "--",
-): string {
+const numberFormatCache = new Map<string, Intl.NumberFormat>();
+function getNumberFormat(locale?: string): Intl.NumberFormat {
+  const key = locale ?? "default";
+  let formatter = numberFormatCache.get(key);
+  if (!formatter) {
+    formatter = new Intl.NumberFormat(locale);
+    numberFormatCache.set(key, formatter);
+  }
+  return formatter;
+}
+
+/** 整数格式化（带千分位） */
+export function fmtInt(value: unknown, locale?: string): string {
   const num = parseFiniteNumber(value);
-  if (num == null) return fallback;
-  return new Intl.NumberFormat(locale).format(Math.trunc(num));
+  if (num == null) return "--";
+  return getNumberFormat(locale).format(Math.trunc(num));
 }
 
 /** 用量金额的显示币种。库里一律存美元，只在显示时按 `rate`（1 美元折多少）换算。 */
@@ -70,7 +79,7 @@ export function resolveTrendChartType(
 }
 
 /**
- * 侧栏「今日」要显示的项：没设置过只显示金额；空列表＝不显示。
+ * 侧栏「今日」要显示的项目：没设置过只显示金额；空列表＝不显示。
  * 认不出的项忽略，按菜单顺序排，最多两项（手改设置文件多写了也只取前两项）。
  */
 export function resolveSidebarToday(
@@ -97,7 +106,7 @@ export interface MoneyDisplay {
 
 export const USD_DISPLAY: MoneyDisplay = { currency: "USD", rate: 1 };
 
-// 人民币和日元都写 ¥，两国各自就是这么写的；选的是哪种在设置里看得到
+// 人民币和日元都写 ¥，两国各自就是这么写的；选的是哪种在设置里看得倒
 const CURRENCY_SYMBOL: Record<DisplayCurrency, string> = {
   USD: "$",
   CNY: "¥",
@@ -133,7 +142,7 @@ export function isValidExchangeRate(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value > 0;
 }
 
-/** 把设置文件里的值收成能用的显示方式：不认得的币种回落 USD，汇率不合法用预置值。 */
+/** 把设置文件里的值改成能用的显示方式：不认得的币种回落 USD，汇率不合法用预置值。 */
 export function resolveMoneyDisplay(
   settings: UsageDisplaySettings | undefined,
 ): MoneyDisplay {
@@ -147,7 +156,7 @@ export function resolveMoneyDisplay(
   };
 }
 
-/** 固定小数位：`$1.23` / `¥8.36`。组件里用 `useMoneyFormat()`，别直接传 display。 */
+/** 固定小数位：`$1.23` / `¥8.36`。组件里用 `useMoneyFormat()`，别直接传 display。负数输出如 `-$1.50` */
 export function formatMoney(
   usd: unknown,
   digits: number,
@@ -156,27 +165,31 @@ export function formatMoney(
 ): string {
   const num = parseFiniteNumber(usd);
   if (num == null) return fallback;
-  const value = num * display.rate;
+  const isNegative = num < 0;
+  const absValue = Math.abs(num) * display.rate;
   const symbol = CURRENCY_SYMBOL[display.currency];
   const shown = shownDigits(display, digits);
-  const fixed = value.toFixed(shown);
+  const fixed = absValue.toFixed(shown);
+  const prefix = isNegative ? `-${symbol}` : symbol;
   // 换算后位数少了，很小的一笔会四舍五入成 0：改写两位有效数字（¥0.0034），别像是免费
-  if (shown < digits && value !== 0 && Number(fixed) === 0) {
-    return `${symbol}${Number(value.toPrecision(2))}`;
+  if (shown < digits && absValue !== 0 && Number(fixed) === 0) {
+    return `${prefix}${Number(absValue.toPrecision(2))}`;
   }
-  return `${symbol}${groupThousands(fixed)}`;
+  return `${prefix}${groupThousands(fixed)}`;
 }
 
 /** 按大小取位数并去掉末尾的 0：`$0.0081` / `$0.012` / `$1.25` */
 export function formatMoneyCompact(usd: number, display: MoneyDisplay): string {
-  const value = usd * display.rate;
-  const prefix = CURRENCY_SYMBOL[display.currency];
-  if (value < 0.01) return `${prefix}${Number(value.toFixed(4))}`;
-  if (value < 1) return `${prefix}${Number(value.toFixed(3))}`;
-  return `${prefix}${groupThousands(value.toFixed(2))}`;
+  const isNegative = usd < 0;
+  const absValue = Math.abs(usd) * display.rate;
+  const symbol = CURRENCY_SYMBOL[display.currency];
+  const prefix = isNegative ? `-${symbol}` : symbol;
+  if (absValue < 0.01) return `${prefix}${Number(absValue.toFixed(4))}`;
+  if (absValue < 1) return `${prefix}${Number(absValue.toFixed(3))}`;
+  return `${prefix}${groupThousands(absValue.toFixed(2))}`;
 }
 
-/** 侧栏这类窄处：100 以上不带小数（`¥280`），免得把旁边的标签挤成省略号。 */
+/** 侧栏这类窄处，100 以上不带小数（`¥280`），免得把旁边的标签挤成省略号。 */
 export function formatMoneyShort(usd: unknown, display: MoneyDisplay): string {
   const num = parseFiniteNumber(usd);
   if (num == null) return "--";
@@ -185,11 +198,16 @@ export function formatMoneyShort(usd: unknown, display: MoneyDisplay): string {
 
 /**
  * 坐标轴刻度：画图前就把数据换算成显示币种（刻度才会是 ¥50 这种整数），
- * 所以这里拿到的已是显示币种的值，只加符号，不定小数位。
+ * 所以这里拿到的已是显示币种的值，只加符号，消除 IEEE 754 浮点尾巴。
  */
 export function formatMoneyTick(value: unknown, display: MoneyDisplay): string {
   const num = parseFiniteNumber(value) ?? 0;
-  return `${CURRENCY_SYMBOL[display.currency]}${groupThousands(String(num))}`;
+  const isNegative = num < 0;
+  const absNum = Math.abs(num);
+  const symbol = CURRENCY_SYMBOL[display.currency];
+  const prefix = isNegative ? `-${symbol}` : symbol;
+  const rounded = Math.round(absNum * 1e6) / 1e6;
+  return `${prefix}${groupThousands(rounded.toString())}`;
 }
 
 /** 输出少于这个数的请求（工具调用这类）不算速度：0.1 秒回 15 个 token 会算出离谱的数。 */
@@ -203,14 +221,13 @@ interface OutputTokensPerSecondInput {
 }
 
 /**
- * 一条请求的生成时间（毫秒）= 耗时 − 首字。缺耗时或首字、或差值不大于 0 时返回 null。
+ * 一条请求的生成时间（毫秒）= 耗时 − 首字。缺耗时或首字、或差值不大干 0 时返回 null。
  * 只算路由服务记的请求：会话日志的耗时和首字都是按时间戳估的，不算精确速度
  * （会话日志另有估算，见 [getEstimatedTokensPerSecond]）；非流式请求没有首字。
  */
 export function getGenerationMs(
   log: OutputTokensPerSecondInput,
 ): number | null {
-  if (isSessionLogRequest(log)) return null;
   const latencyMs = parseFiniteNumber(log.latencyMs);
   const firstTokenMs = parseFiniteNumber(log.firstTokenMs);
   if (latencyMs == null || firstTokenMs == null) return null;
@@ -218,23 +235,27 @@ export function getGenerationMs(
   return generationMs > 0 ? generationMs : null;
 }
 
-// 生成窗口短于此值时不算速度：中转站缓冲后一次性吐出、或短回复整段落在
-// 同一个网络包里，窗口只剩几毫秒，算出来的是传输突发而不是生成速度。
-export const SPEED_MIN_GENERATION_MS = 100;
+export function isProxyRequest(log: OutputTokensPerSecondInput): boolean {
+  return log.dataSource == null || log.dataSource === "proxy";
+}
 
-/** 这条请求能不能算速度：输出不少于 100 token，且生成时间不短于 100 毫秒。 */
+export function isSessionLogRequest(log: OutputTokensPerSecondInput): boolean {
+  return log.dataSource === "session";
+}
+
 export function isSpeedEligible(log: OutputTokensPerSecondInput): boolean {
   const outputTokens = parseFiniteNumber(log.outputTokens);
   const generationMs = getGenerationMs(log);
   return (
+    isProxyRequest(log) &&
     outputTokens != null &&
     outputTokens >= SPEED_MIN_OUTPUT_TOKENS &&
     generationMs != null &&
-    generationMs >= SPEED_MIN_GENERATION_MS
+    generationMs > 0
   );
 }
 
-/** 单条速度（tok/s）= 输出 token ÷ ((耗时 − 首字) / 1000)；不满足条件返回 null。 */
+/** 单条速度（tok/s）：输出 token ÷ (生成时间 / 1000)；不满足条件返回 null。 */
 export function getOutputTokensPerSecond(
   log: OutputTokensPerSecondInput,
 ): number | null {
@@ -245,24 +266,11 @@ export function getOutputTokensPerSecond(
   return Number.isFinite(tps) && tps > 0 ? tps : null;
 }
 
-/** Session-log speed has no output-count threshold; any positive output with a
- * measurable duration contributes, including short responses.
- */
-export const SPEED_ESTIMATE_MIN_OUTPUT_TOKENS = 1;
+export const SPEED_ESTIMATE_MIN_OUTPUT_TOKENS = 100;
+export const SPEED_ESTIMATE_MIN_DURATION_MS = 2000;
 
-/** Session-log estimates only require a positive duration. */
-export const SPEED_ESTIMATE_MIN_DURATION_MS = 1;
-
-/** 这条请求是不是从会话日志导入的（不是路由服务记的）。 */
-export function isSessionLogRequest(log: { dataSource?: unknown }): boolean {
-  return (
-    typeof log.dataSource === "string" &&
-    log.dataSource !== "" &&
-    log.dataSource !== "proxy"
-  );
-}
-
-/** Session-log estimates use every row with positive output and positive duration.
+/**
+ * 会话日志单条估算速度的前提条件。
  * The estimate includes first-token wait time and therefore uses the full duration.
  */
 export function isSpeedEstimateEligible(
@@ -279,7 +287,7 @@ export function isSpeedEstimateEligible(
   );
 }
 
-/** 单条估算速度（tok/s）= 输出 token ÷ (估算耗时 / 1000)，含首字等待；不满足条件返回 null。 */
+/** 单条估算速度（tok/s）：输出 token ÷ (估算耗时 / 1000)，含首字等待；不满足条件返回 null。 */
 export function getEstimatedTokensPerSecond(
   log: OutputTokensPerSecondInput,
 ): number | null {
@@ -347,14 +355,14 @@ export function formatEstimatedTokensPerSecond(
 
 /**
  * 表格和指标卡里的 Token 数：1 万以下写全（带千分位），以上压成最多 3 位有效数字
- * （48.2K、189K、18.2M），精确值放进 title。四种语言都用 K/M/B，和画板一致。
+ * （38.2K、389K、38.2M），精确值放进 title。四种语言都用 K/M/B，和画板一致。
  */
 export function formatTokensCompact(value: unknown, locale?: string): string {
   const num = parseFiniteNumber(value);
   if (num == null) return "--";
   const abs = Math.abs(num);
   if (abs < 10_000) {
-    return new Intl.NumberFormat(locale).format(Math.round(num));
+    return getNumberFormat(locale).format(Math.round(num));
   }
   const units: Array<[number, string]> = [
     [1e9, "B"],
@@ -398,7 +406,6 @@ export function getLocaleFromLanguage(language: string): string {
   }
   if (normalized.startsWith("zh")) return "zh-CN";
   if (normalized.startsWith("ja")) return "ja-JP";
-  if (normalized.startsWith("tr")) return "tr-TR";
   return "en-US";
 }
 
@@ -429,9 +436,8 @@ export function joinClauses(items: readonly string[], lang: string): string {
 /**
  * Token 数量的紧凑显示。
  *
- * Why: 中日文用户期待 "亿/万" 量纲；英文用户期待 K/M/B。共用同一份格式化
- * 逻辑避免 Hero 卡和分应用卡显示不一致。`compactDecimals=2` 用于 Hero
- * 大数副标（更精确），默认 1 位用于卡片副字段。
+ * Why: 中文用户期待 "亿 / 万" 量纲，日文用户期待 "億 / 万"；英文用户期待 K/M/B。
+ * `compactDecimals=2` 用于 Hero 大数副标（更精确），默认 1 位用于卡片副字段。
  */
 export function formatTokensShort(
   value: number,
@@ -446,18 +452,23 @@ export function formatTokensShort(
     if (value >= 1e4) return `${(value / 1e4).toFixed(decimals)} 萬`;
     return value.toLocaleString("zh-TW");
   }
-  if (normalizedLang.startsWith("zh") || normalizedLang.startsWith("ja")) {
+  if (normalizedLang.startsWith("ja")) {
+    if (value >= 1e8) return `${(value / 1e8).toFixed(2)} 億`;
+    if (value >= 1e4) return `${(value / 1e4).toFixed(decimals)} 万`;
+    return value.toLocaleString("ja-JP");
+  }
+  if (normalizedLang.startsWith("zh")) {
     if (value >= 1e8) return `${(value / 1e8).toFixed(2)} 亿`;
     if (value >= 1e4) return `${(value / 1e4).toFixed(decimals)} 万`;
-    return value.toLocaleString();
+    return value.toLocaleString("zh-CN");
   }
   if (value >= 1e9) return `${(value / 1e9).toFixed(2)}B`;
   if (value >= 1e6) return `${(value / 1e6).toFixed(2)}M`;
   if (value >= 1e3) return `${(value / 1e3).toFixed(decimals)}K`;
-  return value.toLocaleString();
+  return value.toLocaleString(getLocaleFromLanguage(lang));
 }
 
-/** 「刚刚」「N 分钟前」「N 小时前」「N 天前」 */
+/** 「刚刚」「N 分钟前」「N 小时前」「N 天前」。 */
 export function formatRelativeTime(
   timestampMs: number,
   t: (key: string, options?: { count?: number }) => string,

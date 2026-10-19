@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import {
   queryClient,
   settingsKeys,
@@ -13,7 +14,8 @@ export interface SettingsFormState extends Settings {}
 export function useSettings() {
   const { data: rawSettings, isLoading } = useSettingsQuery();
   const updateMutation = useUpdateSettingsMutation();
-  const saveQueue = useRef<Promise<void>>(Promise.resolve());
+  const saveQueue = useRef<Promise<boolean>>(Promise.resolve(true));
+  const { t } = useTranslation();
 
   const settings = useMemo<SettingsFormState | null>(() => {
     if (!rawSettings) return null;
@@ -21,8 +23,8 @@ export function useSettings() {
   }, [rawSettings]);
 
   const autoSaveSettings = useCallback(
-    async (updates: Partial<Settings>) => {
-      let result: { requiresRestart: false } | null = null;
+    async (updates: Partial<Settings>): Promise<boolean> => {
+      let success = false;
       const operation = saveQueue.current.then(async () => {
         // 设置还没从后端读出来时不能保存：此时 rawSettings 是 null，
         // 用默认值合并会整包写库，把用户已有的语言/主题/刷新间隔等覆盖成默认。
@@ -32,26 +34,33 @@ export function useSettings() {
           console.warn(
             "[useSettings] 设置尚未加载完成，跳过本次保存以避免覆盖已有配置",
           );
-          return;
+          return false;
         }
         try {
           const merged: Settings = { ...current, ...updates };
           await updateMutation.mutateAsync(merged);
           queryClient.setQueryData(settingsKeys.all, merged);
-          result = { requiresRestart: false };
+          success = true;
+          return true;
         } catch (error: unknown) {
           const message = error instanceof Error ? error.message : String(error);
-          toast.error("保存设置失败: " + message);
+          toast.error(
+            t("settings.saveFailed", {
+              defaultValue: "保存设置失败: {{error}}",
+              error: message,
+            }),
+          );
+          return false;
         }
       });
       saveQueue.current = operation.then(
-        () => undefined,
-        () => undefined,
+        (ok) => ok,
+        () => false,
       );
       await operation;
-      return result;
+      return success;
     },
-    [rawSettings, updateMutation],
+    [rawSettings, updateMutation, t],
   );
 
   return {
@@ -60,3 +69,4 @@ export function useSettings() {
     autoSaveSettings,
   };
 }
+

@@ -20,8 +20,9 @@ use crate::gemini_config::get_gemini_dir;
 use crate::proxy::usage::calculator::{CostCalculator, ModelPricing};
 use crate::proxy::usage::parser::TokenUsage;
 use crate::services::session_usage::{
-    metadata_modified_nanos, update_sync_state, SessionSyncResult,
+    metadata_modified_nanos, update_sync_state_with_importer, SessionSyncResult,
 };
+use crate::services::sql_helpers::INPUT_TOKEN_SEMANTICS_LEGACY;
 use crate::services::usage_stats::{find_model_pricing, should_skip_session_insert, DedupKey};
 use crate::session_manager::providers::gemini::{is_session_file, parse_session_document};
 use rust_decimal::Decimal;
@@ -110,33 +111,33 @@ fn collect_gemini_session_files(gemini_dir: &Path) -> Vec<PathBuf> {
         }
     }
     for tmp_dir in tmp_dirs {
-    if tmp_dir.is_dir() {
-        if let Ok(project_dirs) = fs::read_dir(&tmp_dir) {
-            for entry in project_dirs.flatten() {
-                let chats_dir = entry.path().join("chats");
-                if !chats_dir.is_dir() {
-                    continue;
-                }
+        if tmp_dir.is_dir() {
+            if let Ok(project_dirs) = fs::read_dir(&tmp_dir) {
+                for entry in project_dirs.flatten() {
+                    let chats_dir = entry.path().join("chats");
+                    if !chats_dir.is_dir() {
+                        continue;
+                    }
 
-                let chat_files = match fs::read_dir(&chats_dir) {
-                    Ok(entries) => entries,
-                    Err(_) => continue,
-                };
+                    let chat_files = match fs::read_dir(&chats_dir) {
+                        Ok(entries) => entries,
+                        Err(_) => continue,
+                    };
 
-                for file_entry in chat_files.flatten() {
-                    let path = file_entry.path();
-                    let is_session = path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .is_some_and(|n| n.starts_with("session-"))
-                        && is_session_file(&path);
-                    if is_session && seen_paths.insert(path.clone()) {
-                        files.push(path);
+                    for file_entry in chat_files.flatten() {
+                        let path = file_entry.path();
+                        let is_session = path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .is_some_and(|n| n.starts_with("session-"))
+                            && is_session_file(&path);
+                        if is_session && seen_paths.insert(path.clone()) {
+                            files.push(path);
+                        }
                     }
                 }
             }
         }
-    }
     }
 
     // 2. Antigravity / agy 会话日志: brain/<conversation_id>/.system_generated/logs/transcript.jsonl
@@ -194,8 +195,13 @@ pub(crate) fn normalize_agy_model_name(raw: &str) -> String {
 
 /// 从消息内容中尝试提取 Model Selection 变更
 pub(crate) fn extract_model_from_content(content: &str) -> Option<String> {
-    if let Some(pos) = content.find("Model Selection` from ") {
-        let after = &content[pos + "Model Selection` from ".len()..];
+    // `transcript.jsonl` also contains tool output and quoted source code.  Looking
+    // for the fragment `Model Selection` from ...` alone would treat this parser's
+    // own source text as a real setting change (which previously produced values
+    // such as `")-{`).  Only accept the explicit AGY settings metadata sentence.
+    const MARKER: &str = "The user changed setting `Model Selection` from ";
+    if let Some(pos) = content.find(MARKER) {
+        let after = &content[pos + MARKER.len()..];
         if let Some(to_pos) = after.find(" to ") {
             let model_part = &after[to_pos + 4..];
             let mut end = model_part.len();
@@ -216,9 +222,16 @@ pub(crate) fn extract_model_from_content(content: &str) -> Option<String> {
                     }
                 }
             }
-            let raw_model = model_part[..end].trim();
+            let raw_model = model_part[..end].trim().trim_matches('`').trim();
             if !raw_model.is_empty() {
-                return Some(normalize_agy_model_name(raw_model));
+                let normalized = normalize_agy_model_name(raw_model);
+                if normalized.starts_with("gemini-")
+                    && normalized.chars().all(|ch| {
+                        ch.is_ascii_lowercase() || ch.is_ascii_digit() || ".-_".contains(ch)
+                    })
+                {
+                    return Some(normalized);
+                }
             }
         }
     }
@@ -237,7 +250,10 @@ fn sync_single_agy_transcript_file(
         .map_err(|e| AppError::Config(format!("无法读取文件元数据: {e}")))?;
     let file_modified = metadata_modified_nanos(&metadata);
     if metadata.len() > MAX_GEMINI_FILE_BYTES {
-        return Err(AppError::Config(format!("Gemini session file exceeds {} bytes", MAX_GEMINI_FILE_BYTES)));
+        return Err(AppError::Config(format!(
+            "Gemini session file exceeds {} bytes",
+            MAX_GEMINI_FILE_BYTES
+        )));
     }
 
     if file_modified <= last_modified {
@@ -253,8 +269,8 @@ fn sync_single_agy_transcript_file(
         .and_then(|n| n.to_str())
         .map(|s| s.to_string());
 
-    let file = fs::File::open(file_path)
-        .map_err(|e| AppError::Config(format!("无法打开文件: {e}")))?;
+    let file =
+        fs::File::open(file_path).map_err(|e| AppError::Config(format!("无法打开文件: {e}")))?;
     let reader = std::io::BufReader::new(file);
 
     let mut imported: u32 = 0;
@@ -267,10 +283,20 @@ fn sync_single_agy_transcript_file(
     for line_result in reader.lines() {
         let line = match line_result {
             Ok(l) => l,
-            Err(error) => return Err(AppError::Config(format!("Gemini session read failed: {error}"))),
+            Err(error) => {
+                return Err(AppError::Config(format!(
+                    "Gemini session read failed: {error}"
+                )))
+            }
         };
         if line.len() > MAX_GEMINI_LINE_BYTES {
-            return Err(AppError::Config("Gemini session line exceeds the safety limit".to_string()));
+            log::warn!(
+                "[GEMINI-SYNC] 忽略超长行 ({} bytes > {} max) in {}",
+                line.len(),
+                MAX_GEMINI_LINE_BYTES,
+                file_path.display()
+            );
+            continue;
         }
         if line.trim().is_empty() {
             continue;
@@ -278,7 +304,10 @@ fn sync_single_agy_transcript_file(
 
         let value: serde_json::Value = match serde_json::from_str(&line) {
             Ok(v) => v,
-            Err(_) => continue,
+            Err(e) => {
+                log::warn!("[GEMINI-SYNC] JSON 解析失败 in {}: {e}", file_path.display());
+                continue;
+            }
         };
 
         if let Some(content) = value.get("content").and_then(|c| c.as_str()) {
@@ -288,11 +317,21 @@ fn sync_single_agy_transcript_file(
         }
 
         let timestamp_str = value.get("created_at").and_then(|v| v.as_str());
-        let current_ms = timestamp_str.and_then(crate::services::session_usage::parse_timestamp_millis);
+        let current_ms =
+            timestamp_str.and_then(crate::services::session_usage::parse_timestamp_millis);
 
-        let input = value.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-        let output = value.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-        let cached = value.get("cache_read_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        let input = value
+            .get("input_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32;
+        let output = value
+            .get("output_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32;
+        let cached = value
+            .get("cache_read_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32;
 
         if input == 0 && output == 0 && cached == 0 {
             if let Some(ms) = current_ms {
@@ -370,7 +409,7 @@ fn sync_single_agy_transcript_file(
         }
     }
 
-    update_sync_state(db, &file_path_str, file_modified, step_count)?;
+    update_sync_state_with_importer(db, &file_path_str, file_modified, step_count, Some("gemini"))?;
     Ok((imported, skipped))
 }
 
@@ -393,7 +432,10 @@ fn sync_single_gemini_file(
         .map_err(|e| AppError::Config(format!("无法读取文件元数据: {e}")))?;
     let file_modified = metadata_modified_nanos(&metadata);
     if metadata.len() > MAX_GEMINI_FILE_BYTES {
-        return Err(AppError::Config(format!("Gemini session file exceeds {} bytes", MAX_GEMINI_FILE_BYTES)));
+        return Err(AppError::Config(format!(
+            "Gemini session file exceeds {} bytes",
+            MAX_GEMINI_FILE_BYTES
+        )));
     }
 
     // 文件未变化则跳过
@@ -427,7 +469,8 @@ fn sync_single_gemini_file(
     for msg in messages {
         let msg_type = msg.get("type").and_then(|t| t.as_str());
         let timestamp_str = msg.get("timestamp").and_then(|v| v.as_str());
-        let current_ms = timestamp_str.and_then(crate::services::session_usage::parse_timestamp_millis);
+        let current_ms =
+            timestamp_str.and_then(crate::services::session_usage::parse_timestamp_millis);
 
         // 只处理 type == "gemini" 的消息，其他消息记录为边界起点
         if msg_type != Some("gemini") {
@@ -454,7 +497,26 @@ fn sync_single_gemini_file(
         gemini_msg_count += 1;
 
         // 提取消息 ID 和模型
-        let message_id = msg.get("id").and_then(|v| v.as_str()).unwrap_or("unknown");
+        let message_id = match msg.get("id").and_then(|v| v.as_str()) {
+            Some(id) if !id.trim().is_empty() => id.to_string(),
+            _ => {
+                // P0-3: 缺失 id 时退回稳定合成键，避免同会话多条无 id 消息塌缩至 unknown 互相覆盖
+                use sha2::{Digest, Sha256};
+                let mut hasher = Sha256::new();
+                hasher.update(b"gemini_synth_msg_v1:");
+                if let Some(ts) = timestamp_str {
+                    hasher.update(ts.as_bytes());
+                }
+                hasher.update(tokens.input.to_le_bytes());
+                hasher.update(tokens.output.to_le_bytes());
+                hasher.update(tokens.cached.to_le_bytes());
+                hasher.update(tokens.thoughts.to_le_bytes());
+                if let Some(content) = msg.get("content").and_then(|c| c.as_str()) {
+                    hasher.update(content.as_bytes());
+                }
+                format!("synth_{:x}", hasher.finalize())
+            }
+        };
         let model = msg
             .get("model")
             .and_then(|v| v.as_str())
@@ -510,7 +572,7 @@ fn sync_single_gemini_file(
     }
 
     // 更新同步状态
-    update_sync_state(db, &file_path_str, file_modified, gemini_msg_count)?;
+    update_sync_state_with_importer(db, &file_path_str, file_modified, gemini_msg_count, Some("gemini"))?;
 
     Ok((imported, skipped))
 }
@@ -526,6 +588,7 @@ fn parse_gemini_tokens(tokens: &serde_json::Value) -> GeminiTokens {
 }
 
 /// 插入单条 Gemini 会话记录到 proxy_request_logs
+#[allow(clippy::too_many_arguments)]
 fn insert_gemini_session_entry(
     db: &Database,
     request_id: &str,
@@ -608,8 +671,9 @@ fn insert_gemini_session_entry(
             input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
             input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd, total_cost_usd,
             latency_ms, first_token_ms, status_code, error_message, session_id,
-            provider_type, is_streaming, cost_multiplier, created_at, data_source
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)
+            provider_type, is_streaming, cost_multiplier, created_at, data_source,
+            input_token_semantics
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)
         ON CONFLICT(request_id) DO UPDATE SET
             model = excluded.model,
             input_tokens = excluded.input_tokens,
@@ -653,6 +717,7 @@ fn insert_gemini_session_entry(
             "1.0",               // cost_multiplier
             created_at,
             "gemini_session",    // data_source
+            INPUT_TOKEN_SEMANTICS_LEGACY, // input_token_semantics: Gemini input_tokens 包含 cache_read
         ],
     )
     .map_err(|e| AppError::Database(format!("插入 Gemini 会话日志失败: {e}")))?;
@@ -696,10 +761,11 @@ fn sqlite_column_exists(
 
 fn is_gemini_cursor_path(path: &str) -> bool {
     let lower = path.to_lowercase();
-    lower.contains("transcript.jsonl")
-        || lower.contains("session-")
-        || lower.contains(".gemini")
+    // P0-1: 修复过宽匹配。不要单独匹配 "session-"，因为 Claude Code 的项目目录名包含 "session-" 会被误删
+    lower.contains(".gemini")
         || lower.contains("antigravity")
+        || lower.ends_with("transcript.jsonl")
+        || (lower.contains("chats") && (lower.ends_with(".json") || lower.ends_with(".jsonl")))
 }
 
 pub(crate) fn reset_gemini_usage_on_conn(conn: &rusqlite::Connection) -> Result<(), AppError> {
@@ -724,9 +790,21 @@ pub(crate) fn reset_gemini_usage_on_conn(conn: &rusqlite::Connection) -> Result<
     if sqlite_table_exists(conn, "session_log_sync")?
         && sqlite_column_exists(conn, "session_log_sync", "file_path")?
     {
+        // 优先根据 importer 列按归属删除
+        if sqlite_column_exists(conn, "session_log_sync", "importer")? {
+            conn.execute(
+                "DELETE FROM session_log_sync WHERE importer = 'gemini'",
+                [],
+            )
+            .map_err(|error| {
+                AppError::Database(format!("清理 Gemini/agy 同步 cursor 失败: {error}"))
+            })?;
+        }
+
+        // 对未记录 importer 的旧数据，使用严格路径匹配兜底
         let paths = {
             let mut statement = conn
-                .prepare("SELECT file_path FROM session_log_sync")
+                .prepare("SELECT file_path FROM session_log_sync WHERE importer IS NULL OR importer = ''")
                 .map_err(|error| {
                     AppError::Database(format!("读取会话同步 cursor 失败: {error}"))
                 })?;
@@ -739,15 +817,14 @@ pub(crate) fn reset_gemini_usage_on_conn(conn: &rusqlite::Connection) -> Result<
                 })?;
             paths
         };
-        for file_path in paths
-            .into_iter()
-            .filter(|path| is_gemini_cursor_path(path))
-        {
+        for file_path in paths.into_iter().filter(|path| is_gemini_cursor_path(path)) {
             conn.execute(
                 "DELETE FROM session_log_sync WHERE file_path = ?1",
                 [file_path],
             )
-            .map_err(|error| AppError::Database(format!("清理 Gemini/agy 同步 cursor 失败: {error}")))?;
+            .map_err(|error| {
+                AppError::Database(format!("清理 Gemini/agy 同步 cursor 失败: {error}"))
+            })?;
         }
     }
     Ok(())
@@ -757,7 +834,9 @@ impl Database {
     pub(crate) fn reset_gemini_usage(&self) -> Result<(), AppError> {
         let conn = lock_conn!(self.conn);
         conn.execute("SAVEPOINT reset_gemini_usage", [])
-            .map_err(|error| AppError::Database(format!("开启 Gemini/agy 重建事务失败: {error}")))?;
+            .map_err(|error| {
+                AppError::Database(format!("开启 Gemini/agy 重建事务失败: {error}"))
+            })?;
         let result = reset_gemini_usage_on_conn(&conn);
         match result {
             Ok(()) => {
@@ -798,7 +877,9 @@ mod tests {
 
         let files = collect_gemini_session_files(&agy);
         assert!(
-            files.iter().any(|path| path.ends_with("session-classic.json")),
+            files
+                .iter()
+                .any(|path| path.ends_with("session-classic.json")),
             "classic ~/.gemini/tmp chats must still be scanned when antigravity-cli exists"
         );
     }
@@ -939,14 +1020,8 @@ mod tests {
             normalize_agy_model_name("Gemini 3.8 Flash (High)"),
             "gemini-3.8-flash"
         );
-        assert_eq!(
-            normalize_agy_model_name("Gemini 2.5 Pro"),
-            "gemini-2.5-pro"
-        );
-        assert_eq!(
-            normalize_agy_model_name("gemini-4-argon"),
-            "gemini-4-argon"
-        );
+        assert_eq!(normalize_agy_model_name("Gemini 2.5 Pro"), "gemini-2.5-pro");
+        assert_eq!(normalize_agy_model_name("gemini-4-argon"), "gemini-4-argon");
         assert_eq!(normalize_agy_model_name(""), "gemini-3.8-flash");
     }
 
@@ -960,6 +1035,19 @@ mod tests {
 
         let without_model = "Hello world!";
         assert_eq!(extract_model_from_content(without_model), None);
+
+        // Quoted parser source in a tool result must not be mistaken for a setting change.
+        let quoted_source = r#"if let Some(pos) = content.find("Model Selection` from ") {
+            let after = &content[pos + "Model Selection` from ".len()..];
+            if let Some(to_pos) = after.find(" to ") {
+                let model_part = &after[to_pos + 4..];
+            }
+        }"#;
+        assert_eq!(extract_model_from_content(quoted_source), None);
+
+        let malformed =
+            "The user changed setting `Model Selection` from None to \") {\". No need to comment";
+        assert_eq!(extract_model_from_content(malformed), None);
     }
 
     #[test]
@@ -1006,7 +1094,11 @@ mod tests {
     fn test_agy_transcript_timing_latency_and_first_token() -> Result<(), AppError> {
         let db = Database::memory()?;
         let temp_dir = tempfile::tempdir().map_err(|e| AppError::Config(e.to_string()))?;
-        let conv_dir = temp_dir.path().join("conv-123").join(".system_generated").join("logs");
+        let conv_dir = temp_dir
+            .path()
+            .join("conv-123")
+            .join(".system_generated")
+            .join("logs");
         fs::create_dir_all(&conv_dir).map_err(|e| AppError::Config(e.to_string()))?;
         let transcript_path = conv_dir.join("transcript.jsonl");
 
@@ -1024,14 +1116,16 @@ mod tests {
         {
             let conn = lock_conn!(db.conn);
             let mut stmt = conn.prepare("SELECT request_id, latency_ms, first_token_ms, output_tokens FROM proxy_request_logs ORDER BY request_id")?;
-            let rows = stmt.query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, Option<i64>>(2)?,
-                    row.get::<_, i64>(3)?,
-                ))
-            })?.collect::<Result<Vec<_>, _>>()?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, Option<i64>>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
 
             assert_eq!(rows.len(), 2);
             // Step 1: 04:35:40 -> 04:35:43 => 3000ms latency, first_token = 3000 / 3 = 1000ms
@@ -1049,7 +1143,10 @@ mod tests {
 
         // 验证 ModelStats 能计算出估算速度与首字中位数
         let model_stats = db.get_model_stats(None, None, None, None, None)?;
-        let gemini_stat = model_stats.iter().find(|s| s.model == "gemini-3.8-flash").expect("gemini stat");
+        let gemini_stat = model_stats
+            .iter()
+            .find(|s| s.model == "gemini-3.8-flash")
+            .expect("gemini stat");
         assert_eq!(gemini_stat.est_speed_output_tokens, 550);
         assert_eq!(gemini_stat.est_speed_duration_ms, 5000);
         assert!(gemini_stat.est_first_token_median_ms.is_some());
@@ -1057,4 +1154,3 @@ mod tests {
         Ok(())
     }
 }
-

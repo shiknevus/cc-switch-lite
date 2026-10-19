@@ -60,6 +60,7 @@ impl Database {
     /// then delete the aggregated detail rows.
     /// Returns the number of deleted detail rows.
     pub fn rollup_and_prune(&self, retain_days: i64) -> Result<u64, AppError> {
+        let retain_days = retain_days.clamp(1, 3650);
         let cutoff = compute_local_midnight_cutoff(Local::now(), retain_days)?;
         let conn = lock_conn!(self.conn);
 
@@ -139,14 +140,14 @@ impl Database {
                 {INPUT_TOKEN_SEMANTICS_FRESH},
                 decimal_add(COALESCE(old.total_cost_usd, '0'), new_cost),
                 CASE WHEN COALESCE(old.request_count, 0) + new_req > 0
-                    THEN (COALESCE(old.avg_latency_ms, 0) * COALESCE(old.request_count, 0)
+                    THEN CAST(ROUND((COALESCE(old.avg_latency_ms, 0) * COALESCE(old.request_count, 0)
                           + new_lat * new_req)
-                         / (COALESCE(old.request_count, 0) + new_req)
+                         / (COALESCE(old.request_count, 0) + new_req)) AS INTEGER)
                     ELSE 0 END
             FROM (
                 SELECT
                     date(l.created_at, 'unixepoch', 'localtime') as d,
-                    l.app_type as a, l.provider_id as p, l.model as m,
+                    l.app_type as a, l.provider_id as p, COALESCE(l.model, 'unknown') as m,
                     COALESCE(l.request_model, '') as rm,
                     COALESCE(l.pricing_model, '') as pm,
                     COUNT(*) as new_req,
@@ -158,7 +159,7 @@ impl Database {
                     COALESCE(decimal_sum(l.total_cost_usd), 0) as new_cost,
                     COALESCE(AVG(l.latency_ms), 0) as new_lat
                 FROM proxy_request_logs l
-                WHERE l.created_at < ?1 AND {effective_filter}
+                WHERE l.created_at < ?1 AND date(l.created_at, 'unixepoch', 'localtime') IS NOT NULL AND {effective_filter}
                 GROUP BY d, a, p, m, rm, pm
             ) agg
             LEFT JOIN usage_daily_rollups old

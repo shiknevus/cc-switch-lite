@@ -17,7 +17,6 @@ export default defineConfig({
         manualChunks: {
           recharts: ["recharts"],
           radix: [
-            "@radix-ui/react-checkbox",
             "@radix-ui/react-dialog",
             "@radix-ui/react-dropdown-menu",
             "@radix-ui/react-label",

@@ -119,6 +119,14 @@ fn normalize_decimal(label: &str, value: &str) -> Result<String, AppError> {
             format!("{label} price must be non-negative: {value}"),
         ));
     }
+    let max_price = Decimal::from(100_000);
+    if parsed > max_price {
+        return Err(AppError::localized(
+            "usage.invalidPrice",
+            format!("{label} 价格超出上限 ($100,000/M): {value}"),
+            format!("{label} price exceeds maximum ($100,000/M): {value}"),
+        ));
+    }
     Ok(value.to_string())
 }
 
@@ -374,17 +382,18 @@ fn update_model_pricing_batch_inner(
         normalized.insert(entry.model_id.clone(), entry);
     }
     let entries = normalized.into_values().collect::<Vec<_>>();
-    let model_ids = entries
-        .iter()
-        .map(|entry| entry.model_id.clone())
-        .collect::<Vec<_>>();
 
     sync_local_model_pricing(db)?;
-    let changed = {
+    let (changed, model_ids) = {
         let _file_guard = file_lock()
             .lock()
             .map_err(|error| AppError::Config(format!("模型定价文件锁失败: {error}")))?;
         let mut file = load_or_create_file_unlocked()?;
+        let model_ids = entries
+            .iter()
+            .map(|entry| entry.model_id.clone())
+            .collect::<Vec<_>>();
+
         let mut file_models = file
             .models
             .into_iter()
@@ -409,7 +418,7 @@ fn update_model_pricing_batch_inner(
         }
         write_file_unlocked(&file)?;
         transaction.commit()?;
-        changed
+        (changed, model_ids)
     };
 
     if changed > 0 {

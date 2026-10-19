@@ -48,6 +48,10 @@ pub async fn get_session_usage_summary(
     .await
 }
 
+fn clamp_timestamp(ts: Option<i64>) -> Option<i64> {
+    ts.map(|t| t.clamp(0, 4_102_444_800)) // 限制在 1970 至 2100 年范围内
+}
+
 #[tauri::command]
 pub async fn get_usage_summary_by_app(
     state: State<'_, AppState>,
@@ -56,6 +60,8 @@ pub async fn get_usage_summary_by_app(
     provider_name: Option<String>,
     model: Option<String>,
 ) -> Result<Vec<UsageSummaryByApp>, AppError> {
+    let start_date = clamp_timestamp(start_date);
+    let end_date = clamp_timestamp(end_date);
     run_db_query(&state, move |db| {
         db.get_usage_summary_by_app(
             start_date,
@@ -76,6 +82,8 @@ pub async fn get_usage_trends(
     provider_name: Option<String>,
     model: Option<String>,
 ) -> Result<Vec<DailyStats>, AppError> {
+    let start_date = clamp_timestamp(start_date);
+    let end_date = clamp_timestamp(end_date);
     run_db_query(&state, move |db| {
         db.get_daily_trends(
             start_date,
@@ -169,12 +177,19 @@ pub async fn get_request_detail(
 }
 
 #[tauri::command]
-pub fn get_model_pricing(state: State<'_, AppState>) -> Result<Vec<ModelPricingInfo>, AppError> {
-    log::info!("获取模型定价列表");
-    state.db.ensure_model_pricing_seeded()?;
-    crate::services::model_pricing::sync_local_model_pricing(&state.db)?;
+pub async fn get_model_pricing(
+    state: State<'_, AppState>,
+) -> Result<Vec<ModelPricingInfo>, AppError> {
+    run_db_query(&state, get_model_pricing_sync).await
+}
 
-    let db = state.db.clone();
+fn get_model_pricing_sync(
+    db: &crate::database::Database,
+) -> Result<Vec<ModelPricingInfo>, AppError> {
+    log::info!("获取模型定价列表");
+    db.ensure_model_pricing_seeded()?;
+    crate::services::model_pricing::sync_local_model_pricing(db)?;
+
     let conn = crate::database::lock_conn!(db.conn);
 
     let table_exists: bool = conn
@@ -183,7 +198,7 @@ pub fn get_model_pricing(state: State<'_, AppState>) -> Result<Vec<ModelPricingI
             [],
             |row| row.get::<_, i64>(0).map(|count| count > 0),
         )
-        .unwrap_or(false);
+        .map_err(|e| AppError::Database(format!("检查 model_pricing 表失败: {e}")))?;
 
     if !table_exists {
         log::error!("model_pricing 表不存在");
@@ -218,7 +233,7 @@ pub fn get_model_pricing(state: State<'_, AppState>) -> Result<Vec<ModelPricingI
 }
 
 #[tauri::command]
-pub fn update_model_pricing(
+pub async fn update_model_pricing(
     state: State<'_, AppState>,
     model_id: String,
     display_name: String,
@@ -227,66 +242,102 @@ pub fn update_model_pricing(
     cache_read_cost: String,
     cache_creation_cost: String,
 ) -> Result<(), AppError> {
-    crate::services::model_pricing::update_model_pricing(
-        &state.db,
-        ModelPricingInfo {
-            model_id,
-            display_name,
-            input_cost_per_million: input_cost,
-            output_cost_per_million: output_cost,
-            cache_read_cost_per_million: cache_read_cost,
-            cache_creation_cost_per_million: cache_creation_cost,
-        },
-    )?;
-    Ok(())
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::services::model_pricing::update_model_pricing(
+            &db,
+            ModelPricingInfo {
+                model_id,
+                display_name,
+                input_cost_per_million: input_cost,
+                output_cost_per_million: output_cost,
+                cache_read_cost_per_million: cache_read_cost,
+                cache_creation_cost_per_million: cache_creation_cost,
+            },
+        )
+        .map(|_| ())
+    })
+    .await
+    .map_err(|error| AppError::Message(format!("模型定价更新任务失败: {error}")))?
 }
 
 #[tauri::command]
-pub fn update_model_pricing_batch(
+pub async fn update_model_pricing_batch(
     state: State<'_, AppState>,
     entries: Vec<ModelPricingInfo>,
 ) -> Result<usize, AppError> {
-    crate::services::model_pricing::update_model_pricing_batch(&state.db, entries)
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::services::model_pricing::update_model_pricing_batch(&db, entries)
+    })
+    .await
+    .map_err(|error| AppError::Message(format!("批量模型定价更新任务失败: {error}")))?
 }
 
 #[tauri::command]
-pub fn get_models_dev_sync_config(
+pub async fn get_models_dev_sync_config(
     state: State<'_, AppState>,
 ) -> Result<ModelsDevSyncState, AppError> {
-    crate::services::model_pricing::get_models_dev_sync_state(&state.db)
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::services::model_pricing::get_models_dev_sync_state(&db)
+    })
+    .await
+    .map_err(|error| AppError::Message(format!("读取模型同步配置任务失败: {error}")))?
 }
 
 #[tauri::command]
-pub fn save_models_dev_sync_config(
+pub async fn save_models_dev_sync_config(
     state: State<'_, AppState>,
     config: ModelsDevSyncConfig,
 ) -> Result<(), AppError> {
-    crate::services::model_pricing::save_models_dev_sync_config(&state.db, config)
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::services::model_pricing::save_models_dev_sync_config(&db, config)
+    })
+    .await
+    .map_err(|error| AppError::Message(format!("保存模型同步配置任务失败: {error}")))?
 }
 
 #[tauri::command]
-pub fn record_models_dev_sync_result(
+pub async fn record_models_dev_sync_result(
     state: State<'_, AppState>,
     synced_at: Option<i64>,
     error: Option<String>,
 ) -> Result<(), AppError> {
-    crate::services::model_pricing::record_models_dev_sync_result(&state.db, synced_at, error)
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::services::model_pricing::record_models_dev_sync_result(&db, synced_at, error)
+    })
+    .await
+    .map_err(|error| AppError::Message(format!("记录模型同步结果任务失败: {error}")))?
 }
 
 #[tauri::command]
-pub fn check_provider_limits(
+pub async fn check_provider_limits(
     state: State<'_, AppState>,
     provider_id: String,
     app_type: String,
 ) -> Result<crate::services::usage_stats::ProviderLimitStatus, AppError> {
-    state.db.check_provider_limits(&provider_id, &app_type)
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || db.check_provider_limits(&provider_id, &app_type))
+        .await
+        .map_err(|error| AppError::Message(format!("查询供应商限额任务失败: {error}")))?
 }
 
 #[tauri::command]
-pub fn delete_model_pricing(state: State<'_, AppState>, model_id: String) -> Result<(), AppError> {
-    crate::services::model_pricing::delete_model_pricing(&state.db, &model_id)?;
-    log::info!("已删除模型定价: {model_id}");
-    Ok(())
+pub async fn delete_model_pricing(
+    state: State<'_, AppState>,
+    model_id: String,
+) -> Result<(), AppError> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::services::model_pricing::delete_model_pricing(&db, &model_id)?;
+        log::info!("已删除模型定价: {model_id}");
+        Ok(())
+    })
+    .await
+    .map_err(|error| AppError::Message(format!("删除模型定价任务失败: {error}")))?
 }
 
 #[tauri::command]
@@ -301,7 +352,7 @@ pub async fn sync_session_usage(
     // 直接返回空结果，避免前后端定时器在同一刷新周期内连续执行两次全量目录扫描。
     if let Some(last_sync) = crate::services::session_usage::last_sync_completed_at() {
         let elapsed = chrono::Utc::now().timestamp_millis() - last_sync;
-        if elapsed >= 0 && elapsed < 3000 {
+        if (0..3000).contains(&elapsed) {
             log::debug!("跳过重复会话同步：距上次同步完成仅 {elapsed}ms");
             return Ok(crate::services::session_usage::SessionSyncResult::default());
         }
@@ -339,7 +390,7 @@ fn restore_rebuild_on_error(
     }
 }
 
-fn finish_codex_rebuild(
+fn finish_rebuild(
     result: Result<crate::services::session_usage::SessionSyncResult, AppError>,
 ) -> Result<crate::services::session_usage::SessionSyncResult, AppError> {
     crate::usage_events::notify_log_recorded();
@@ -358,17 +409,10 @@ pub async fn rebuild_codex_usage(
         let backup = db.backup_database_file()?;
         db.reset_codex_usage()?;
         let result = crate::services::session_usage_codex::sync_codex_usage(&db);
-        finish_codex_rebuild(restore_rebuild_on_error(&db, backup, result))
+        finish_rebuild(restore_rebuild_on_error(&db, backup, result))
     })
     .await
     .map_err(|error| AppError::Message(format!("Codex 用量重建任务失败: {error}")))?
-}
-
-fn finish_gemini_rebuild(
-    result: Result<crate::services::session_usage::SessionSyncResult, AppError>,
-) -> Result<crate::services::session_usage::SessionSyncResult, AppError> {
-    crate::usage_events::notify_log_recorded();
-    result
 }
 
 #[tauri::command]
@@ -383,7 +427,7 @@ pub async fn rebuild_gemini_usage(
         let backup = db.backup_database_file()?;
         db.reset_gemini_usage()?;
         let result = crate::services::session_usage_gemini::sync_gemini_usage(&db);
-        finish_gemini_rebuild(restore_rebuild_on_error(&db, backup, result))
+        finish_rebuild(restore_rebuild_on_error(&db, backup, result))
     })
     .await
     .map_err(|error| AppError::Message(format!("Antigravity (agy) 用量重建任务失败: {error}")))?
@@ -394,13 +438,6 @@ pub async fn rebuild_agy_usage(
     state: State<'_, AppState>,
 ) -> Result<crate::services::session_usage::SessionSyncResult, AppError> {
     rebuild_gemini_usage(state).await
-}
-
-fn finish_dsh_rebuild(
-    result: Result<crate::services::session_usage::SessionSyncResult, AppError>,
-) -> Result<crate::services::session_usage::SessionSyncResult, AppError> {
-    crate::usage_events::notify_log_recorded();
-    result
 }
 
 #[tauri::command]
@@ -415,16 +452,20 @@ pub async fn rebuild_dsh_usage(
         let backup = db.backup_database_file()?;
         db.reset_dsh_usage()?;
         let result = crate::services::session_usage_dsh::sync_dsh_usage(&db);
-        finish_dsh_rebuild(restore_rebuild_on_error(&db, backup, result))
+        finish_rebuild(restore_rebuild_on_error(&db, backup, result))
     })
     .await
     .map_err(|error| AppError::Message(format!("Dsh 用量重建任务失败: {error}")))?
 }
 
 #[tauri::command]
-pub fn get_usage_data_sources(
+pub async fn get_usage_data_sources(
     state: State<'_, AppState>,
 ) -> Result<Vec<crate::services::session_usage::DataSourceSummary>, AppError> {
-    crate::services::session_usage::get_data_source_breakdown(&state.db)
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::services::session_usage::get_data_source_breakdown(&db)
+    })
+    .await
+    .map_err(|error| AppError::Message(format!("读取数据来源任务失败: {error}")))?
 }
-

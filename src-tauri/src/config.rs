@@ -20,10 +20,13 @@ pub fn get_home_dir() -> PathBuf {
         return home;
     }
 
-    dirs::home_dir().unwrap_or_else(|| {
-        log::warn!("无法获取用户主目录，回退到当前目录");
-        PathBuf::from(".")
-    })
+    dirs::home_dir()
+        .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
+        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+        .unwrap_or_else(|| {
+            log::warn!("无法获取用户主目录，回退到当前目录");
+            PathBuf::from(".")
+        })
 }
 
 pub fn is_wsl_path(_path: &Path) -> bool {
@@ -44,10 +47,30 @@ pub fn get_app_config_dir() -> PathBuf {
 }
 
 pub fn get_claude_config_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("CLAUDE_CONFIG_DIR") {
+        let trimmed = dir.trim();
+        if !trimmed.is_empty() {
+            let path = PathBuf::from(trimmed);
+            if path.is_absolute() {
+                return path;
+            }
+            return get_home_dir().join(path);
+        }
+    }
     get_home_dir().join(".claude")
 }
 
 pub fn get_codex_config_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("CODEX_HOME") {
+        let trimmed = dir.trim();
+        if !trimmed.is_empty() {
+            let path = PathBuf::from(trimmed);
+            if path.is_absolute() {
+                return path;
+            }
+            return get_home_dir().join(path);
+        }
+    }
     get_home_dir().join(".codex")
 }
 
@@ -121,12 +144,10 @@ fn get_opencode_data_dir() -> PathBuf {
             return dir.clone();
         }
     }
-    candidates.into_iter().next().unwrap_or_else(|| {
-        get_home_dir()
-            .join(".local")
-            .join("share")
-            .join("opencode")
-    })
+    candidates
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| get_home_dir().join(".local").join("share").join("opencode"))
 }
 
 pub fn get_pi_dir() -> PathBuf {
@@ -142,8 +163,8 @@ pub fn atomic_write<P: AsRef<Path>>(path: P, content: &[u8]) -> Result<(), AppEr
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
 
-    let mut temp_file = tempfile::NamedTempFile::new_in(parent)
-        .map_err(|e| AppError::io(parent, e))?;
+    let mut temp_file =
+        tempfile::NamedTempFile::new_in(parent).map_err(|e| AppError::io(parent, e))?;
 
     temp_file
         .write_all(content)

@@ -1,6 +1,6 @@
 [package]
 name = "cc-switch-lite"
-version = "1.2.2"
+version = "1.2.3"
 description = "Lightweight usage and cost statistics assistant for AI coding tools"
 authors = ["Jason Young", "CC Switch Team"]
 license = "MIT"
@@ -26,16 +26,13 @@ chrono = { version = "0.4", features = ["serde"] }
 tauri = { version = "2.8.2", features = ["image-png", "protocol-asset", "tray-icon"] }
 tauri-utils = "2.10.2"
 tauri-plugin-log = "2"
-tauri-plugin-opener = "2"
 tauri-plugin-process = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-window-state = "2"
 auto-launch = "0.5"
 dirs = "5.0"
-reqwest = { version = "0.12", features = ["rustls-tls", "json"] }
 zstd = "0.13"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync"] }
-regex = "1.10"
 thiserror = "2.0"
 rusqlite = { version = "0.31", features = ["bundled", "backup", "hooks", "functions"] }
 rust_decimal = "1.33"

@@ -77,7 +77,6 @@ pub fn run() {
             log::info!("检测到第二个实例，唤回已有窗口");
             tray::show_main_window(app);
         }))
-        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
@@ -162,7 +161,10 @@ pub fn run() {
                         .timezone_strategy(TimezoneStrategy::UseLocal)
                         .build(),
                 )?;
-                log::info!("=== CC Switch Lite v{} started ===", env!("CARGO_PKG_VERSION"));
+                log::info!(
+                    "=== CC Switch Lite v{} started ===",
+                    env!("CARGO_PKG_VERSION")
+                );
             }
 
             usage_events::init(app.handle().clone());
@@ -221,9 +223,14 @@ pub fn run() {
             let sync_db = db.clone();
             tauri::async_runtime::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(750)).await;
-                let auto_sync = settings::get_settings_from_db(&sync_db)
-                    .map(|settings| settings.session_auto_sync_enabled)
-                    .unwrap_or(false);
+                let settings_db = sync_db.clone();
+                let auto_sync = tauri::async_runtime::spawn_blocking(move || {
+                    settings::get_settings_from_db(&settings_db)
+                        .map(|settings| settings.session_auto_sync_enabled)
+                        .unwrap_or(false)
+                })
+                .await
+                .unwrap_or(false);
                 if !auto_sync {
                     log::info!("startup session scan skipped because automatic sync is disabled");
                     return;
@@ -258,10 +265,19 @@ pub fn run() {
                         prune_usage_logs(ticker_db.clone()).await;
                     }
 
-                    let settings = match settings::get_settings_from_db(&ticker_db) {
-                        Ok(settings) => settings,
-                        Err(error) => {
+                    let settings_db = ticker_db.clone();
+                    let settings = match tauri::async_runtime::spawn_blocking(move || {
+                        settings::get_settings_from_db(&settings_db)
+                    })
+                    .await
+                    {
+                        Ok(Ok(settings)) => settings,
+                        Ok(Err(error)) => {
                             log::warn!("读取同步设置失败，跳过本轮: {error}");
+                            continue;
+                        }
+                        Err(error) => {
+                            log::warn!("读取同步设置任务失败，跳过本轮: {error}");
                             continue;
                         }
                     };
@@ -270,7 +286,9 @@ pub fn run() {
                         if last_sync.elapsed().as_millis() as u64 >= interval_ms {
                             last_sync = std::time::Instant::now();
                             let scan_db = ticker_db.clone();
-                            if let Ok(_guard) = services::session_usage::session_sync_mutex().try_lock() {
+                            if let Ok(_guard) =
+                                services::session_usage::session_sync_mutex().try_lock()
+                            {
                                 let _ = tauri::async_runtime::spawn_blocking(move || {
                                     services::session_usage::sync_all_unlocked(&scan_db)
                                 })

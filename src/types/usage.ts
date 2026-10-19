@@ -1,4 +1,4 @@
-// 浣跨敤缁熻鐩稿叧绫诲瀷瀹氫箟
+// 用量统计相关的类型定义
 
 export interface TokenUsage {
   inputTokens: number;
@@ -14,7 +14,7 @@ export interface RequestLog {
   appType: string;
   model: string;
   requestModel?: string;
-  /** 鍐欏叆鏃跺疄闄呯敤浜庤浠风殑妯″瀷鍚嶏紱璺敱鎺ョ + request 璁′环妯″紡涓嬪彲鑳戒笌 model 涓嶅悓 */
+  /** 计费模型：命中定价表时记录的 model 键（别名 + request 重写后实际命中 model 的值） */
   pricingModel?: string;
   costMultiplier: string;
   inputTokens: number;
@@ -28,7 +28,7 @@ export interface RequestLog {
   totalCostUsd: string;
   isStreaming: boolean;
   latencyMs: number;
-  /** 璺敱鏈嶅姟璁扮殑鏄簿纭瀛楋紱浼氳瘽鏃ュ織瀵煎叆鐨勬槸鎸夋椂闂存埑鎺ㄥ嚭鏉ョ殑浼扮畻鍊硷紙鐪?dataSource锛?*/
+  /** 真实请求返回首字耗时（毫秒）：仅对路由服务流式请求有效；按时间戳估算的会话日志不填（见 dataSource） */
   firstTokenMs?: number;
   durationMs?: number;
   statusCode: number;
@@ -88,7 +88,7 @@ export interface UsageSummary {
   successRate: number;
   /** input + output + cache_creation + cache_read, all cache-normalized */
   realTotalTokens: number;
-  /** cache_read / (input + cache_creation + cache_read), range 0鈥? */
+  /** cache_read / (input + cache_creation + cache_read), range 0~1 */
   cacheHitRate: number;
 }
 
@@ -110,42 +110,41 @@ export interface DailyStats {
 
 export interface ProviderStats {
   providerId: string;
-  appType: string;
   providerName: string;
+  appType: string;
   requestCount: number;
-  /** 鐪熷疄娑堣€?Tokens锛堟柊澧炶緭鍏?+ 杈撳嚭 + 缂撳瓨鍐欏叆 + 缂撳瓨鍛戒腑锛夛紝涓庢寚鏍囧崱鍚屽彛寰?*/
   totalTokens: number;
   totalCost: string;
+  avgCostPerRequest: string;
   successRate: number;
-  avgLatencyMs: number;
-  /** 閫熷害鍒嗗瓙锛氭湁棣栧瓧銆佽緭鍑?鈮?100 token 鐨勬槑缁嗚姹傜殑杈撳嚭涔嬪拰锛堟棩姹囨€讳笉璁★級 */
+  /** 精确测速输出 token（仅路由代理成功且 ≥ 100 token 的请求） */
   speedOutputTokens?: number;
-  /** 閫熷害鍒嗘瘝锛氬悓涓€鎵硅姹傜殑锛堣€楁椂 鈭?棣栧瓧锛変箣鍜岋紝姣 */
+  /** 精确测速耗时毫秒（每条请求的 latencyMs - firstTokenMs 求和） */
   speedGenerationMs?: number;
-  /** 浼扮畻閫熷害鍒嗗瓙锛氫細璇濇棩蹇楀鍏ャ€佹湁浼扮畻鑰楁椂銆佽緭鍑?鈮?200 token 鐨勮姹傜殑杈撳嚭涔嬪拰 */
+  /** 估算测速输出 token（会话日志成功且 ≥ 100 token 的请求） */
   estSpeedOutputTokens?: number;
-  /** 浼扮畻閫熷害鍒嗘瘝锛氬悓涓€鎵硅姹傜殑浼扮畻鑰楁椂锛堝惈棣栧瓧绛夊緟锛変箣鍜岋紝姣 */
+  /** 估算测速耗时毫秒（每条会话请求的估算耗时求和） */
   estSpeedDurationMs?: number;
-  /** 棣栧瓧鏃堕棿涓綅鏁帮紙姣锛夛細缁忚矾鐢辨湇鍔°€佹垚鍔熺殑娴佸紡鏄庣粏璇锋眰锛涙病鏈夋椂涓?null */
+  /** 首字时间中位数（毫秒）：仅对路由代理流式请求统计，无数据为 null */
   firstTokenMedianMs?: number | null;
-  /** 浼扮畻棣栧瓧涓綅鏁帮紙姣锛夛細浼氳瘽鏃ュ織瀵煎叆銆佹寜鏃堕棿鎴虫帹鍑轰簡棣栧瓧鐨勮姹傦紱娌℃湁绮剧‘鍊兼椂鎵嶆樉绀猴紝甯?鈮?*/
+  /** 会话首字时间中位数（毫秒）：会话日志根据时间戳估算首字，无数据为 null */
   estFirstTokenMedianMs?: number | null;
 }
 
 export interface ModelStats {
   model: string;
   requestCount: number;
-  /** 鐪熷疄娑堣€?Tokens锛堟柊澧炶緭鍏?+ 杈撳嚭 + 缂撳瓨鍐欏叆 + 缂撳瓨鍛戒腑锛夛紝涓庢寚鏍囧崱鍚屽彛寰?*/
+  /** 真实全部 Tokens（输入 + 输出 + 缓存读取 + 缓存写入） */
   totalTokens: number;
   totalCost: string;
   avgCostPerRequest: string;
   successRate: number;
-  /** 閫熷害鍒嗗瓙鍒嗘瘝锛屽彛寰勫悓 ProviderStats 鐨勫洓涓€熷害瀛楁 */
+  /** 精确测速指标（口径与 ProviderStats 一致） */
   speedOutputTokens?: number;
   speedGenerationMs?: number;
   estSpeedOutputTokens?: number;
   estSpeedDurationMs?: number;
-  /** 棣栧瓧鏃堕棿涓綅鏁帮紝鍙ｅ緞鍚?ProviderStats 鐨勯偅涓や釜瀛楁 */
+  /** 首字时间中位数，口径与 ProviderStats 一致 */
   firstTokenMedianMs?: number | null;
   estFirstTokenMedianMs?: number | null;
 }
@@ -160,9 +159,11 @@ export interface LogFilters {
 }
 
 /**
- * Dashboard 椤舵爮鐨勫叏灞€绛涢€夌淮搴︼紝浣滅敤浜?Hero / 瓒嬪娍鍥?/ 涓変釜缁熻 Tab銆? *
- * - `providerName` 鎸夊睍绀哄悕绮剧‘鍖归厤锛堜笌 Provider 缁熻鍒楄〃鍚屽彛寰勶紝鍚? *   "Claude (Session)" 绛変細璇濆崰浣嶅悕锛夛紱
- * - `model` 鎸夈€屾湁鏁堣浠锋ā鍨嬨€嶅尮閰嶏紙pricing_model 浼樺厛銆佸洖钀?model锛? *   涓庢ā鍨嬬粺璁＄殑鍒嗙粍鍙ｅ緞涓€鑷达級銆? */
+ * Dashboard 范围过滤状态，用于 Hero / 趋势图 / 日志列表等 Tab：
+ *
+ * - `providerName` 用于过滤特定供应商，由 Provider 统计表或下拉选择触发
+ * - `model` 用于过滤模型名称
+ */
 export interface UsageScopeFilters {
   appType?: string;
   providerName?: string;
@@ -192,16 +193,8 @@ export interface UsageRangeSelection {
  *
  * `claude-desktop` is intentionally NOT listed: the Desktop gateway's proxy
  * traffic is still recorded under its own `app_type` (preserving route-takeover
- * billing audit 鈥?the request detail panel shows the real value), but the
- * dashboard folds it into `claude` for display. It is the embedded Claude Code
- * runtime running inside the Desktop shell, and Desktop *chat* usage never
- * passes through this app at all, so a separate "Claude Desktop" bucket would
- * only ever show a partial number and mislead users into reading it as the
- * Desktop's full usage. The backend collapses `claude-desktop 鈫?claude` in
- * every dashboard query (see `folded_app_type_sql`).
- * `opencode` and `pi` have no proxy handler; their usage reaches this
- * dashboard through session importers. `openclaw` / `hermes` appear only as
- * managed apps elsewhere.
+ * billing audit - the request detail panel shows the real value), but the
+ * dashboard folds it into `claude` for display.
  */
 export type AppType =
   | "claude"
@@ -230,8 +223,7 @@ export const KNOWN_APP_TYPES: ReadonlyArray<AppType> = [
  * App types whose proxy uses an OpenAI-style protocol. Two consequences:
  *
  * 1. `inputTokens` already includes the cached portion (must subtract
- *    `cacheReadTokens` to get fresh-input semantics 鈥?see
- *    [getFreshInputTokens]).
+ *    `cacheReadTokens` to get fresh-input semantics - see [getFreshInputTokens]).
  * 2. The protocol does not report cache _creation_ separately, only cache
  *    _reads_. So `cacheCreationTokens` is always 0 for these app types and
  *    the UI should label it as N/A rather than 0.
@@ -341,5 +333,3 @@ export interface StatsFilters {
   providerId?: string;
   appType?: string;
 }
-
-

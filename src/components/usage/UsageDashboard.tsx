@@ -63,7 +63,7 @@ import {
   useRememberedChoice,
   writeRememberedChoice,
 } from "./rememberedChoice";
-import { fmtInt, formatRelativeTime, getLocaleFromLanguage } from "./format";
+import { fmtInt, getLocaleFromLanguage } from "./format";
 import { getUsageProviderLabel, usageProviderTitle } from "./providerLabel";
 
 // 用量页打开时扫描会话日志的间隔；旧版存过的「关」(0) 等无效值回落到默认
@@ -134,6 +134,67 @@ function useMinuteTicker() {
     return () => window.clearInterval(timer);
   }, []);
   return now;
+}
+
+function HeaderSyncStatus({
+  lastSyncAt,
+  sessionAutoSyncEnabled,
+  showSyncText,
+  syncingSession,
+  onSyncNow,
+}: {
+  lastSyncAt: number | null;
+  sessionAutoSyncEnabled: boolean;
+  showSyncText: boolean;
+  syncingSession: boolean;
+  onSyncNow: () => void;
+}) {
+  const { t } = useTranslation();
+  const now = useMinuteTicker();
+  const syncedLabel = useMemo(() => {
+    if (lastSyncAt == null) return undefined;
+    const minutes = Math.max(0, Math.floor((now - lastSyncAt) / 60_000));
+    return minutes < 1
+      ? t("usage.syncStatus.justNow")
+      : t("usage.syncStatus.minutesAgo", { count: minutes });
+  }, [lastSyncAt, now, t]);
+  const syncText = !sessionAutoSyncEnabled
+    ? t("usage.syncStatus.off")
+    : (syncedLabel ?? t("usage.syncStatus.auto"));
+  const syncTip = sessionAutoSyncEnabled
+    ? t("usage.syncStatus.tipAuto")
+    : t("usage.syncStatus.tipOff");
+
+  return (
+    <>
+      {showSyncText && (
+        <span
+          role="status"
+          title={syncTip}
+          className="min-w-0 truncate whitespace-nowrap text-caption tabular-nums text-fg-3"
+        >
+          {syncText}
+        </span>
+      )}
+      <HoverTip content={showSyncText ? syncTip : `${syncText} · ${syncTip}`}>
+        <Button
+          type="button"
+          variant="neutral"
+          size="regular"
+          className="shrink-0 gap-1.5 ps-2.5"
+          disabled={syncingSession}
+          onClick={onSyncNow}
+        >
+          {syncingSession ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <RefreshCw className="h-3.5 w-3.5" />
+          )}
+          {t("usage.sessionSync.syncNow")}
+        </Button>
+      </HoverTip>
+    </>
+  );
 }
 
 const menuContentClass =
@@ -268,7 +329,6 @@ export function UsageDashboard({
   });
   const lastSyncAt = Math.max(lastManualSyncAt ?? 0, lastScanAt ?? 0) || null;
   const [containerRef, measuredWidth] = useContainerWidth<HTMLDivElement>();
-  const now = useMinuteTicker();
 
   // 测量不到（测试环境）按宽窗口排
   const width = measuredWidth || 1000;
@@ -466,58 +526,19 @@ export function UsageDashboard({
   const modelTotal = modelOptions.reduce((sum, m) => sum + m.count, 0);
 
   // ── 页头 ─────────────────────────────────────────────────────────────
-  const syncedLabel = useMemo(() => {
-    if (lastSyncAt == null) return undefined;
-    const minutes = Math.max(0, Math.floor((now - lastSyncAt) / 60_000));
-    return minutes < 1
-      ? t("usage.syncStatus.justNow")
-      : t("usage.syncStatus.minutesAgo", { count: minutes });
-  }, [lastSyncAt, now, t]);
-  const syncText = !sessionAutoSyncEnabled
-    ? t("usage.syncStatus.off")
-    : (syncedLabel ?? t("usage.syncStatus.auto"));
-  const syncTip = sessionAutoSyncEnabled
-    ? t("usage.syncStatus.tipAuto")
-    : t("usage.syncStatus.tipOff");
-  const drawerSyncedLabel =
-    lastSyncAt == null
-      ? undefined
-      : t("usage.sources.lastSynced", {
-          time: formatRelativeTime(lastSyncAt, t, now),
-        });
-
   const refreshLabel = t("usage.refreshMenu.label", {
     seconds: refreshIntervalMs / 1000,
   });
 
   const headerActions = (
     <>
-      {showSyncText && (
-        <span
-          role="status"
-          title={syncTip}
-          className="min-w-0 truncate whitespace-nowrap text-caption tabular-nums text-fg-3"
-        >
-          {syncText}
-        </span>
-      )}
-      <HoverTip content={showSyncText ? syncTip : `${syncText} · ${syncTip}`}>
-        <Button
-          type="button"
-          variant="neutral"
-          size="regular"
-          className="shrink-0 gap-1.5 ps-2.5"
-          disabled={syncingSession}
-          onClick={() => void runManualSessionSync()}
-        >
-          {syncingSession ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <RefreshCw className="h-3.5 w-3.5" />
-          )}
-          {t("usage.sessionSync.syncNow")}
-        </Button>
-      </HoverTip>
+      <HeaderSyncStatus
+        lastSyncAt={lastSyncAt}
+        sessionAutoSyncEnabled={sessionAutoSyncEnabled}
+        showSyncText={showSyncText}
+        syncingSession={syncingSession}
+        onSyncNow={() => void runManualSessionSync()}
+      />
       {/* 扫描间隔只在自动扫描开着时有意义 */}
       {sessionAutoSyncEnabled && (
         <DropdownMenu>
@@ -808,7 +829,7 @@ export function UsageDashboard({
             providerName={providerName}
             model={model}
             statusCode={statusCode}
-            refreshIntervalMs={0}
+            refreshIntervalMs={refreshIntervalMs}
             onOpenDetail={setDetailRequestId}
             columns={logColumns}
           />
@@ -819,7 +840,7 @@ export function UsageDashboard({
             appType={appType}
             providerName={providerName}
             model={model}
-            refreshIntervalMs={0}
+            refreshIntervalMs={refreshIntervalMs}
           />
         )}
         {tab === "models" && (
@@ -828,7 +849,7 @@ export function UsageDashboard({
             appType={appType}
             providerName={providerName}
             model={model}
-            refreshIntervalMs={0}
+            refreshIntervalMs={refreshIntervalMs}
           />
         )}
         {tab === "settings" && (
@@ -923,7 +944,7 @@ export function UsageDashboard({
           appType={scopedAppType}
           providerName={providerName}
           model={model}
-          refreshIntervalMs={0}
+          refreshIntervalMs={refreshIntervalMs}
           compact={compact}
         />
 
@@ -933,7 +954,7 @@ export function UsageDashboard({
             appType={appType}
             providerName={providerName}
             model={model}
-            refreshIntervalMs={0}
+            refreshIntervalMs={refreshIntervalMs}
           />
         ) : (
           <UsageTrendChart
@@ -942,7 +963,7 @@ export function UsageDashboard({
             appType={appType}
             providerName={providerName}
             model={model}
-            refreshIntervalMs={0}
+            refreshIntervalMs={refreshIntervalMs}
           />
         )}
 
@@ -971,7 +992,7 @@ export function UsageDashboard({
         onSessionAutoSyncEnabledChange={(value) =>
           void onSessionAutoSyncEnabledChange?.(value)
         }
-        syncedLabel={drawerSyncedLabel}
+        lastSyncAt={lastSyncAt}
         syncing={syncingSession}
         onSyncNow={() => void runManualSessionSync()}
         rebuildingCodex={rebuildingCodex}

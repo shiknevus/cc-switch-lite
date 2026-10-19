@@ -8,9 +8,8 @@ use crate::database::{lock_conn, Database};
 use crate::error::AppError;
 use crate::proxy::usage::calculator::CostCalculator;
 use crate::proxy::usage::parser::TokenUsage;
-use crate::services::session_usage::{
-    metadata_modified_nanos, update_sync_state, SessionSyncResult,
-};
+use crate::services::session_usage::{metadata_modified_nanos, SessionSyncResult};
+use crate::services::sql_helpers::INPUT_TOKEN_SEMANTICS_LEGACY;
 use crate::services::usage_stats::{find_model_pricing, should_skip_session_insert, DedupKey};
 use rust_decimal::Decimal;
 use serde::Deserialize;
@@ -112,7 +111,7 @@ struct ParsedDshEntry {
 
 /// 获取 dsh 存储根目录，默认 `~/.dsh/sessions`
 pub fn get_dsh_sessions_dir() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".dsh").join("sessions"))
+    Some(crate::config::get_home_dir().join(".dsh").join("sessions"))
 }
 
 /// 同步所有 dsh 会话日志
@@ -126,7 +125,10 @@ pub fn sync_dsh_usage(db: &Database) -> Result<SessionSyncResult, AppError> {
     let entries = match fs::read_dir(&sessions_dir) {
         Ok(e) => e,
         Err(err) => {
-            log::warn!("[DSH-SYNC] 无法读取 sessions 目录 {:?}: {err}", sessions_dir);
+            log::warn!(
+                "[DSH-SYNC] 无法读取 sessions 目录 {:?}: {err}",
+                sessions_dir
+            );
             return Ok(result);
         }
     };
@@ -180,9 +182,14 @@ pub fn sync_dsh_usage(db: &Database) -> Result<SessionSyncResult, AppError> {
 }
 
 /// 同步单个 dsh 会话文件
-pub fn sync_single_dsh_file(db: &Database, file_path: &Path) -> Result<SessionSyncResult, AppError> {
-    let mut result = SessionSyncResult::default();
-    result.files_scanned = 1;
+pub fn sync_single_dsh_file(
+    db: &Database,
+    file_path: &Path,
+) -> Result<SessionSyncResult, AppError> {
+    let mut result = SessionSyncResult {
+        files_scanned: 1,
+        ..Default::default()
+    };
 
     let metadata = fs::metadata(file_path)
         .map_err(|e| AppError::Config(format!("无法获取 dsh 文件元数据: {e}")))?;
@@ -196,13 +203,14 @@ pub fn sync_single_dsh_file(db: &Database, file_path: &Path) -> Result<SessionSy
     let file_size = metadata.len() as i64;
     let file_path_str = file_path.to_string_lossy().to_string();
 
-    let (last_modified, last_size) = crate::services::session_usage::get_sync_state(db, &file_path_str)?;
+    let (last_modified, last_size) =
+        crate::services::session_usage::get_sync_state(db, &file_path_str)?;
     if last_modified == file_modified && last_size == file_size {
         return Ok(result);
     }
 
-    let file_bytes = fs::read(file_path)
-        .map_err(|e| AppError::Config(format!("读取 dsh 文件失败: {e}")))?;
+    let file_bytes =
+        fs::read(file_path).map_err(|e| AppError::Config(format!("读取 dsh 文件失败: {e}")))?;
 
     let text = if file_path_str.ends_with(".zstd") {
         let decompressed = decompress_zstd_multiframe(&file_bytes)
@@ -240,7 +248,8 @@ pub fn sync_single_dsh_file(db: &Database, file_path: &Path) -> Result<SessionSy
             continue;
         }
 
-        let event_time = raw.time.unwrap_or(0);
+        let default_event_time = (file_modified / 1_000_000).max(0) as u64;
+        let event_time = raw.time.unwrap_or(default_event_time);
 
         match raw.event_type.as_str() {
             "user/message" | "tool/result" | "step/start" | "request/header" => {
@@ -277,9 +286,7 @@ pub fn sync_single_dsh_file(db: &Database, file_path: &Path) -> Result<SessionSy
                     continue;
                 }
 
-                let source = data
-                    .get("message")
-                    .and_then(|m| m.get("source"));
+                let source = data.get("message").and_then(|m| m.get("source"));
                 let model = source
                     .and_then(|s| s.get("model"))
                     .and_then(|m| m.as_str())
@@ -291,9 +298,7 @@ pub fn sync_single_dsh_file(db: &Database, file_path: &Path) -> Result<SessionSy
                     .unwrap_or("deepseek-official")
                     .to_string();
 
-                let stream_chunks = data
-                    .get("stream")
-                    .and_then(|s| s.as_array());
+                let stream_chunks = data.get("stream").and_then(|s| s.as_array());
 
                 let first_chunk_time = stream_chunks
                     .and_then(|arr| arr.first())
@@ -306,30 +311,40 @@ pub fn sync_single_dsh_file(db: &Database, file_path: &Path) -> Result<SessionSy
                     .and_then(|t| t.as_u64());
 
                 let latency_ms = if let Some(req_t) = last_request_time {
-                    event_time.saturating_sub(req_t)
+                    let diff = event_time.saturating_sub(req_t);
+                    if diff <= 3_600_000 {
+                        diff
+                    } else {
+                        0
+                    }
                 } else {
                     0
                 };
 
-                let first_token_ms = if let (Some(req_t), Some(first_t)) = (last_request_time, first_chunk_time) {
-                    if first_t >= req_t {
-                        Some(first_t - req_t)
-                    } else {
-                        Some(0)
-                    }
-                } else {
-                    None
-                };
-
-                let duration_ms = if let (Some(first_t), Some(last_t)) = (first_chunk_time, last_chunk_time) {
-                    if last_t >= first_t {
-                        Some(last_t - first_t)
+                let first_token_ms =
+                    if let (Some(req_t), Some(first_t)) = (last_request_time, first_chunk_time) {
+                        if first_t > req_t {
+                            Some(first_t - req_t)
+                        } else {
+                            None
+                        }
                     } else {
                         None
-                    }
-                } else {
-                    None
-                };
+                    };
+
+                let duration_ms =
+                    if let (Some(first_t), Some(last_t)) = (first_chunk_time, last_chunk_time) {
+                        if last_t >= first_t {
+                            Some(last_t - first_t)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
+                // 消费起点时间，避免同一次 session 中后续独立消息误继承
+                last_request_time = None;
 
                 entries_to_insert.push(ParsedDshEntry {
                     seq,
@@ -349,9 +364,14 @@ pub fn sync_single_dsh_file(db: &Database, file_path: &Path) -> Result<SessionSy
         }
     }
 
+    let conn = lock_conn!(db.conn);
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| AppError::Database(format!("开启 dsh 导入事务失败: {e}")))?;
+
     for entry in entries_to_insert {
         let request_id = format!("dsh_session:{}:{}", session_id, entry.seq);
-        match insert_dsh_session_entry(db, &request_id, &entry, &session_id) {
+        match insert_dsh_session_entry_on_conn(&tx, &request_id, &entry, &session_id) {
             Ok(true) => result.imported += 1,
             Ok(false) => result.skipped += 1,
             Err(err) => {
@@ -361,18 +381,25 @@ pub fn sync_single_dsh_file(db: &Database, file_path: &Path) -> Result<SessionSy
         }
     }
 
-    update_sync_state(db, &file_path_str, file_modified, file_size)?;
+    crate::services::session_usage::update_sync_state_importer_on_conn(
+        &tx,
+        &file_path_str,
+        file_modified,
+        file_size,
+        Some("dsh"),
+    )?;
+    tx.commit()
+        .map_err(|e| AppError::Database(format!("提交 dsh 导入事务失败: {e}")))?;
     Ok(result)
 }
 
 /// 插入一条 dsh 会话日志记录到 proxy_request_logs
-fn insert_dsh_session_entry(
-    db: &Database,
+fn insert_dsh_session_entry_on_conn(
+    conn: &rusqlite::Connection,
     request_id: &str,
     entry: &ParsedDshEntry,
     session_id: &str,
 ) -> Result<bool, AppError> {
-    let conn = lock_conn!(db.conn);
     let created_at = (entry.time_ms / 1000) as i64;
 
     let dedup_key = DedupKey {
@@ -385,7 +412,7 @@ fn insert_dsh_session_entry(
         created_at,
     };
 
-    if should_skip_session_insert(&conn, request_id, &dedup_key)? {
+    if should_skip_session_insert(conn, request_id, &dedup_key)? {
         return Ok(false);
     }
 
@@ -399,9 +426,10 @@ fn insert_dsh_session_entry(
         message_id: None,
     };
 
-    let pricing = find_model_pricing(&conn, &entry.model);
+    let pricing = find_model_pricing(conn, &entry.model);
     let multiplier = Decimal::from(1);
-    let (input_cost, output_cost, cache_read_cost, cache_creation_cost, total_cost) = match pricing {
+    let (input_cost, output_cost, cache_read_cost, cache_creation_cost, total_cost) = match pricing
+    {
         Some(p) => {
             let cost = CostCalculator::calculate_for_app("dsh", &usage, &p, multiplier);
             (
@@ -431,8 +459,9 @@ fn insert_dsh_session_entry(
             input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
             input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd, total_cost_usd,
             latency_ms, first_token_ms, duration_ms, status_code, error_message, session_id,
-            provider_type, is_streaming, cost_multiplier, created_at, data_source
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)
+            provider_type, is_streaming, cost_multiplier, created_at, data_source,
+            input_token_semantics
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)
         ON CONFLICT(request_id) DO UPDATE SET
             model = excluded.model,
             input_tokens = excluded.input_tokens,
@@ -472,11 +501,13 @@ fn insert_dsh_session_entry(
             1, // is_streaming
             1.0f64,
             created_at,
-            "dsh_session"
+            "dsh_session",
+            INPUT_TOKEN_SEMANTICS_LEGACY, // input_token_semantics: DSH 包含 cache_read
         ],
     ).map_err(|e| AppError::Database(format!("插入 dsh 会话用量失败: {e}")))?;
 
-    Ok(true)
+    let changed = conn.changes() > 0;
+    Ok(changed)
 }
 
 #[allow(dead_code)]
@@ -487,9 +518,16 @@ pub(crate) fn reset_dsh_usage_on_conn(conn: &rusqlite::Connection) -> Result<(),
     ).map_err(|e| AppError::Database(format!("重置 dsh 用量失败: {e}")))?;
 
     conn.execute(
-        "DELETE FROM session_log_sync WHERE file_path LIKE '%.dsh%'",
+        "DELETE FROM usage_daily_rollups WHERE provider_id = '_dsh_session'",
         [],
-    ).map_err(|e| AppError::Database(format!("清理 dsh 同步状态失败: {e}")))?;
+    )
+    .map_err(|e| AppError::Database(format!("清理 dsh 用量汇总失败: {e}")))?;
+
+    conn.execute(
+        "DELETE FROM session_log_sync WHERE importer = 'dsh' OR file_path LIKE '%.dsh%'",
+        [],
+    )
+    .map_err(|e| AppError::Database(format!("清理 dsh 同步状态失败: {e}")))?;
 
     Ok(())
 }
@@ -504,7 +542,9 @@ impl Database {
         match result {
             Ok(()) => {
                 conn.execute("RELEASE reset_dsh_usage", [])
-                    .map_err(|error| AppError::Database(format!("提交 dsh 重建事务失败: {error}")))?;
+                    .map_err(|error| {
+                        AppError::Database(format!("提交 dsh 重建事务失败: {error}"))
+                    })?;
                 Ok(())
             }
             Err(error) => {
@@ -582,9 +622,12 @@ mod tests {
         let frame3_data = b"{\"type\":\"assistant/message\",\"seq\":2,\"time\":1790403223000,\"data\":{\"usage\":{\"inputTokens\":200,\"outputTokens\":300,\"cacheReadTokens\":50},\"message\":{\"source\":{\"model\":\"deepseek-chat\",\"provider\":\"deepseek-official\"}},\"stream\":[{\"type\":\"chunk\",\"time\":1790403222000,\"chunk\":{\"type\":\"block-start\"}},{\"type\":\"chunk\",\"time\":1790403222900,\"chunk\":{\"type\":\"finish\"}}]}}\n";
 
         let mut combined = Vec::new();
-        combined.extend_from_slice(&zstd::encode_all(std::io::Cursor::new(frame1_data), 3).unwrap());
-        combined.extend_from_slice(&zstd::encode_all(std::io::Cursor::new(frame2_data), 3).unwrap());
-        combined.extend_from_slice(&zstd::encode_all(std::io::Cursor::new(frame3_data), 3).unwrap());
+        combined
+            .extend_from_slice(&zstd::encode_all(std::io::Cursor::new(frame1_data), 3).unwrap());
+        combined
+            .extend_from_slice(&zstd::encode_all(std::io::Cursor::new(frame2_data), 3).unwrap());
+        combined
+            .extend_from_slice(&zstd::encode_all(std::io::Cursor::new(frame3_data), 3).unwrap());
 
         fs::write(&file_path, combined).unwrap();
 
@@ -603,6 +646,58 @@ mod tests {
         assert_eq!(duration, Some(900));
         assert_eq!(output, 300);
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_reset_dsh_usage() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        {
+            let conn = lock_conn!(db.conn);
+            conn.execute(
+                "INSERT INTO proxy_request_logs (
+                    request_id, provider_id, app_type, model, input_tokens, output_tokens,
+                    total_cost_usd, latency_ms, status_code, created_at, data_source
+                ) VALUES ('dsh-req-1', '_dsh_session', 'dsh', 'deepseek-chat', 10, 10, '0.001', 100, 200, 1000, 'dsh_session')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO usage_daily_rollups (
+                    date, app_type, provider_id, model, request_count, success_count,
+                    input_tokens, output_tokens, total_cost_usd, avg_latency_ms
+                ) VALUES ('2026-10-19', 'dsh', '_dsh_session', 'deepseek-chat', 1, 1, 10, 10, '0.001', 100)",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO session_log_sync (
+                    file_path, last_modified, last_line_offset, last_synced_at
+                ) VALUES ('/path/.dsh/session.jsonl', 100, 1, 100)",
+                [],
+            )?;
+        }
+
+        db.reset_dsh_usage()?;
+
+        let conn = lock_conn!(db.conn);
+        let log_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM proxy_request_logs WHERE app_type = 'dsh'",
+            [],
+            |r| r.get(0),
+        )?;
+        let rollup_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM usage_daily_rollups WHERE provider_id = '_dsh_session'",
+            [],
+            |r| r.get(0),
+        )?;
+        let sync_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM session_log_sync WHERE file_path LIKE '%.dsh%'",
+            [],
+            |r| r.get(0),
+        )?;
+
+        assert_eq!(log_count, 0);
+        assert_eq!(rollup_count, 0);
+        assert_eq!(sync_count, 0);
         Ok(())
     }
 }

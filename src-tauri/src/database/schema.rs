@@ -1,5 +1,6 @@
 use super::{lock_conn, Database};
 use crate::error::AppError;
+use crate::services::sql_helpers::{fresh_input_sql, INPUT_TOKEN_SEMANTICS_FRESH};
 use rusqlite::Connection;
 
 const SCHEMA_VERSION: i64 = 1;
@@ -31,7 +32,9 @@ fn rebuild_rollup_primary_key(conn: &Connection) -> Result<(), AppError> {
         .prepare("SELECT name, pk FROM pragma_table_info('usage_daily_rollups')")
         .map_err(|error| AppError::Database(error.to_string()))?;
     let rows = stmt
-        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })
         .map_err(|error| AppError::Database(error.to_string()))?;
     let mut saw_row = false;
     let mut primary_key = Vec::new();
@@ -60,7 +63,8 @@ fn rebuild_rollup_primary_key(conn: &Connection) -> Result<(), AppError> {
         return Ok(());
     }
 
-    conn.execute_batch(
+    let fresh_input = fresh_input_sql("");
+    let rebuild_sql = format!(
         "CREATE TABLE usage_daily_rollups__rebuild (
             date TEXT NOT NULL,
             app_type TEXT NOT NULL,
@@ -74,7 +78,7 @@ fn rebuild_rollup_primary_key(conn: &Connection) -> Result<(), AppError> {
             output_tokens INTEGER NOT NULL DEFAULT 0,
             cache_read_tokens INTEGER NOT NULL DEFAULT 0,
             cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
-            input_token_semantics INTEGER NOT NULL DEFAULT 0,
+            input_token_semantics INTEGER NOT NULL DEFAULT 2,
             total_cost_usd TEXT NOT NULL DEFAULT '0',
             avg_latency_ms INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (date, app_type, provider_id, model, request_model, pricing_model)
@@ -94,22 +98,24 @@ fn rebuild_rollup_primary_key(conn: &Connection) -> Result<(), AppError> {
             COALESCE(pricing_model, ''),
             COALESCE(SUM(request_count), 0),
             COALESCE(SUM(success_count), 0),
-            COALESCE(SUM(input_tokens), 0),
+            COALESCE(SUM({fresh_input}), 0),
             COALESCE(SUM(output_tokens), 0),
             COALESCE(SUM(cache_read_tokens), 0),
             COALESCE(SUM(cache_creation_tokens), 0),
-            COALESCE(MAX(input_token_semantics), 0),
+            {INPUT_TOKEN_SEMANTICS_FRESH},
             CAST(COALESCE(decimal_sum(total_cost_usd), 0) AS TEXT),
             CASE WHEN COALESCE(SUM(request_count), 0) > 0
-                THEN SUM(avg_latency_ms * request_count) / SUM(request_count)
+                THEN CAST(ROUND(SUM(avg_latency_ms * request_count) / SUM(request_count)) AS INTEGER)
                 ELSE 0 END
         FROM usage_daily_rollups
         GROUP BY date, app_type, provider_id, model,
                  COALESCE(request_model, ''), COALESCE(pricing_model, '');
         DROP TABLE usage_daily_rollups;
-        ALTER TABLE usage_daily_rollups__rebuild RENAME TO usage_daily_rollups;",
-    )
-    .map_err(|error| AppError::Database(format!("重建 usage_daily_rollups 主键失败: {error}")))?;
+        ALTER TABLE usage_daily_rollups__rebuild RENAME TO usage_daily_rollups;"
+    );
+    conn.execute_batch(&rebuild_sql).map_err(|error| {
+        AppError::Database(format!("重建 usage_daily_rollups 主键失败: {error}"))
+    })?;
     Ok(())
 }
 
@@ -225,7 +231,8 @@ impl Database {
                 last_line_offset INTEGER NOT NULL DEFAULT 0,
                 last_synced_at INTEGER NOT NULL,
                 last_byte_offset INTEGER,
-                last_tail_fingerprint INTEGER
+                last_tail_fingerprint INTEGER,
+                importer TEXT
             )",
             [],
         )
@@ -282,6 +289,34 @@ impl Database {
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
 
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_request_logs_app_created
+             ON proxy_request_logs(app_type, created_at)",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_request_logs_provider_created
+             ON proxy_request_logs(provider_id, app_type, created_at)",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_request_logs_session_app
+             ON proxy_request_logs(session_id, app_type)",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_usage_rollups_app_date
+             ON usage_daily_rollups(app_type, date)",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
         Ok(())
     }
 
@@ -303,7 +338,12 @@ impl Database {
             ensure_column(conn, "providers", "icon", "TEXT")?;
             ensure_column(conn, "providers", "icon_color", "TEXT")?;
             ensure_column(conn, "providers", "meta", "TEXT NOT NULL DEFAULT '{}'")?;
-            ensure_column(conn, "providers", "is_current", "BOOLEAN NOT NULL DEFAULT 0")?;
+            ensure_column(
+                conn,
+                "providers",
+                "is_current",
+                "BOOLEAN NOT NULL DEFAULT 0",
+            )?;
             ensure_column(
                 conn,
                 "providers",
@@ -473,12 +513,8 @@ impl Database {
                 "INTEGER NOT NULL DEFAULT 0",
             )?;
             ensure_column(conn, "session_log_sync", "last_byte_offset", "INTEGER")?;
-            ensure_column(
-                conn,
-                "session_log_sync",
-                "last_tail_fingerprint",
-                "INTEGER",
-            )?;
+            ensure_column(conn, "session_log_sync", "last_tail_fingerprint", "INTEGER")?;
+            ensure_column(conn, "session_log_sync", "importer", "TEXT")?;
 
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_request_logs_data_source_created_at
@@ -498,7 +534,11 @@ impl Database {
                 Ok(())
             }
             Err(error) => {
-                let _ = conn.execute_batch("ROLLBACK TO schema_migration; RELEASE schema_migration");
+                if let Err(rb_err) =
+                    conn.execute_batch("ROLLBACK TO schema_migration; RELEASE schema_migration;")
+                {
+                    log::error!("Failed to rollback schema_migration savepoint: {rb_err}");
+                }
                 Err(error)
             }
         }

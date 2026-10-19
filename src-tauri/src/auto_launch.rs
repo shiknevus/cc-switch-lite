@@ -57,7 +57,14 @@ fn get_auto_launch(silent: bool) -> Result<AutoLaunch, AppError> {
 /// 启动时按设置重放一次就能把指向旧路径的启动项纠正过来。
 pub fn enable_auto_launch(silent: bool) -> Result<(), AppError> {
     let auto_launch = get_auto_launch(silent)?;
-    let _ = auto_launch.disable();
+    if auto_launch
+        .is_enabled()
+        .map_err(|e| AppError::Message(format!("检查开机自启状态失败: {e}")))?
+    {
+        auto_launch
+            .disable()
+            .map_err(|e| AppError::Message(format!("更新开机自启失败: {e}")))?;
+    }
     auto_launch
         .enable()
         .map_err(|e| AppError::Message(format!("启用开机自启失败: {e}")))?;
@@ -72,7 +79,10 @@ pub fn enable_auto_launch(silent: bool) -> Result<(), AppError> {
 /// 状态，这时点关闭不该弹一个失败提示。
 pub fn disable_auto_launch() -> Result<(), AppError> {
     let auto_launch = get_auto_launch(false)?;
-    if !auto_launch.is_enabled().unwrap_or(false) {
+    if !auto_launch
+        .is_enabled()
+        .map_err(|e| AppError::Message(format!("检查开机自启状态失败: {e}")))?
+    {
         log::info!("开机自启本就未登记，无需禁用");
         return Ok(());
     }
@@ -116,9 +126,8 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_bundle_path_is_trimmed_to_the_app() {
-        let exe = std::path::Path::new(
-            "/Applications/CC Switch Lite.app/Contents/MacOS/CC Switch Lite",
-        );
+        let exe =
+            std::path::Path::new("/Applications/CC Switch Lite.app/Contents/MacOS/CC Switch Lite");
         assert_eq!(
             macos_app_bundle_path(exe),
             Some(std::path::PathBuf::from("/Applications/CC Switch Lite.app"))
@@ -151,7 +160,10 @@ mod tests {
 
         // 静默开关切换要能改写启动项，而不是留下旧参数
         enable_auto_launch(false).expect("改写为不带 --silent");
-        assert!(is_auto_launch_enabled().unwrap(), "改写参数后仍应处于已启用");
+        assert!(
+            is_auto_launch_enabled().unwrap(),
+            "改写参数后仍应处于已启用"
+        );
 
         disable_auto_launch().expect("禁用开机自启");
         assert!(!is_auto_launch_enabled().unwrap(), "禁用后不应再查到");

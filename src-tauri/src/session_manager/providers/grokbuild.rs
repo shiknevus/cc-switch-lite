@@ -7,4 +7,3 @@ pub fn session_roots() -> Vec<PathBuf> {
         config_dir.join("archived_sessions"),
     ]
 }
-

@@ -1286,11 +1286,14 @@ impl Database {
         let conn = lock_conn!(self.conn);
 
         let end_ts = end_date.unwrap_or_else(|| Local::now().timestamp());
-        let mut start_ts = start_date.unwrap_or_else(|| end_ts - 24 * 60 * 60);
-
-        if start_ts >= end_ts {
-            start_ts = end_ts - 24 * 60 * 60;
-        }
+        let start_ts = if let Some(s) = start_date {
+            if s >= end_ts {
+                return Ok(Vec::new());
+            }
+            s
+        } else {
+            end_ts - 24 * 60 * 60
+        };
 
         let duration = end_ts - start_ts;
         if duration <= 24 * 60 * 60 {
@@ -1333,12 +1336,13 @@ impl Database {
             let effective_filter =
                 effective_usage_log_filter_for_range(&conn, "l", Some(start_ts), Some(end_ts))?;
             let fresh_input = fresh_input_sql("l");
+            let real_tokens = real_total_tokens_sql("l");
             let sql = format!(
                 "SELECT
                     CAST((l.created_at - ?1) / ?3 AS INTEGER) as bucket_idx,
                     COUNT(*) as request_count,
                     COALESCE(decimal_sum(l.total_cost_usd), 0) as total_cost,
-                    COALESCE(SUM({fresh_input} + l.output_tokens), 0) as total_tokens,
+                    COALESCE(SUM({real_tokens}), 0) as total_tokens,
                     COALESCE(SUM({fresh_input}), 0) as total_input_tokens,
                     COALESCE(SUM(l.output_tokens), 0) as total_output_tokens,
                     COALESCE(SUM(l.cache_creation_tokens), 0) as total_cache_creation_tokens,
@@ -1386,7 +1390,19 @@ impl Database {
                 if bucket_idx >= bucket_count {
                     bucket_idx = bucket_count - 1;
                 }
-                map.insert(bucket_idx, stat);
+                map.entry(bucket_idx)
+                    .and_modify(|existing| {
+                        existing.request_count += stat.request_count;
+                        let c1: f64 = existing.total_cost.parse().unwrap_or(0.0);
+                        let c2: f64 = stat.total_cost.parse().unwrap_or(0.0);
+                        existing.total_cost = format!("{:.6}", c1 + c2);
+                        existing.total_tokens += stat.total_tokens;
+                        existing.total_input_tokens += stat.total_input_tokens;
+                        existing.total_output_tokens += stat.total_output_tokens;
+                        existing.total_cache_creation_tokens += stat.total_cache_creation_tokens;
+                        existing.total_cache_read_tokens += stat.total_cache_read_tokens;
+                    })
+                    .or_insert(stat);
             }
 
             let mut stats = Vec::with_capacity(bucket_count as usize);
@@ -1417,7 +1433,14 @@ impl Database {
 
         let start_day = local_datetime_from_timestamp(start_ts)?.date_naive();
         let end_day = local_datetime_from_timestamp(end_ts)?.date_naive();
-        let bucket_count = (end_day.signed_duration_since(start_day).num_days() + 1) as usize;
+        let num_days = end_day.signed_duration_since(start_day).num_days();
+        if num_days < 0 {
+            return Ok(Vec::new());
+        }
+        if num_days > 3650 {
+            return Err(AppError::InvalidInput("趋势查询区间不能超过 10 年".to_string()));
+        }
+        let bucket_count = (num_days + 1) as usize;
 
         let mut extra_conditions: Vec<String> = Vec::new();
         let mut extra_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
@@ -1447,12 +1470,13 @@ impl Database {
         let effective_filter =
             effective_usage_log_filter_for_range(&conn, "l", Some(start_ts), Some(end_ts))?;
         let fresh_input = fresh_input_sql("l");
+        let real_tokens_l = real_total_tokens_sql("l");
         let detail_sql = format!(
             "SELECT
                 date(l.created_at, 'unixepoch', 'localtime') as bucket_date,
                 COUNT(*) as request_count,
                 COALESCE(decimal_sum(l.total_cost_usd), 0) as total_cost,
-                COALESCE(SUM({fresh_input} + l.output_tokens), 0) as total_tokens,
+                COALESCE(SUM({real_tokens_l}), 0) as total_tokens,
                 COALESCE(SUM({fresh_input}), 0) as total_input_tokens,
                 COALESCE(SUM(l.output_tokens), 0) as total_output_tokens,
                 COALESCE(SUM(l.cache_creation_tokens), 0) as total_cache_creation_tokens,
@@ -1530,12 +1554,13 @@ impl Database {
         };
 
         let fresh_input_rollup = fresh_input_sql("r");
+        let real_tokens_r = real_total_tokens_sql("r");
         let rollup_sql = format!(
             "SELECT
                 r.date,
                 COALESCE(SUM(r.request_count), 0),
                 COALESCE(decimal_sum(r.total_cost_usd), 0),
-                COALESCE(SUM({fresh_input_rollup} + r.output_tokens), 0),
+                COALESCE(SUM({real_tokens_r}), 0),
                 COALESCE(SUM({fresh_input_rollup}), 0),
                 COALESCE(SUM(r.output_tokens), 0),
                 COALESCE(SUM(r.cache_creation_tokens), 0),
@@ -2496,25 +2521,42 @@ impl Database {
                 // v12 and earlier: input included cache reads but excluded cache writes.
                 (log.input_tokens as u64).saturating_sub(log.cache_read_tokens as u64)
             };
-        let input_cost =
-            rust_decimal::Decimal::from(billable_input_tokens) * pricing.input / million;
-        let output_cost =
-            rust_decimal::Decimal::from(log.output_tokens as u64) * pricing.output / million;
+        let input_cost = rust_decimal::Decimal::from(billable_input_tokens)
+            .checked_mul(pricing.input)
+            .and_then(|v| v.checked_div(million))
+            .unwrap_or(rust_decimal::Decimal::ZERO);
+        let output_cost = rust_decimal::Decimal::from(log.output_tokens as u64)
+            .checked_mul(pricing.output)
+            .and_then(|v| v.checked_div(million))
+            .unwrap_or(rust_decimal::Decimal::ZERO);
         let cache_read_cost = rust_decimal::Decimal::from(log.cache_read_tokens as u64)
-            * pricing.cache_read
-            / million;
+            .checked_mul(pricing.cache_read)
+            .and_then(|v| v.checked_div(million))
+            .unwrap_or(rust_decimal::Decimal::ZERO);
         let cache_creation_cost = rust_decimal::Decimal::from(log.cache_creation_tokens as u64)
-            * pricing.cache_creation
-            / million;
+            .checked_mul(pricing.cache_creation)
+            .and_then(|v| v.checked_div(million))
+            .unwrap_or(rust_decimal::Decimal::ZERO);
         // 总成本 = 基础成本之和 × 倍率
-        let base_total = input_cost + output_cost + cache_read_cost + cache_creation_cost;
-        let total_cost = base_total * multiplier;
+        let base_total = input_cost
+            .checked_add(output_cost)
+            .and_then(|v| v.checked_add(cache_read_cost))
+            .and_then(|v| v.checked_add(cache_creation_cost))
+            .unwrap_or(rust_decimal::Decimal::ZERO);
+        let total_cost = base_total
+            .checked_mul(multiplier)
+            .unwrap_or(rust_decimal::Decimal::ZERO);
+
+        let new_total_cost = format!("{total_cost:.6}");
+        if new_total_cost == log.total_cost_usd {
+            return Ok(false);
+        }
 
         log.input_cost_usd = format!("{input_cost:.6}");
         log.output_cost_usd = format!("{output_cost:.6}");
         log.cache_read_cost_usd = format!("{cache_read_cost:.6}");
         log.cache_creation_cost_usd = format!("{cache_creation_cost:.6}");
-        log.total_cost_usd = format!("{total_cost:.6}");
+        log.total_cost_usd = new_total_cost;
 
         conn.execute(
             "UPDATE proxy_request_logs

@@ -14,7 +14,7 @@ import { HelpTip } from "@/components/ui/help-tip";
 import { Switch } from "@/components/ui/switch";
 import { APP_DISPLAY_NAME } from "@/components/shell/AppGlyph";
 import { KNOWN_APP_TYPES } from "@/types/usage";
-import { getResolvedLang, joinNames } from "./format";
+import { formatRelativeTime, getResolvedLang, joinNames } from "./format";
 
 interface UsageDataSourcesSheetProps {
   open: boolean;
@@ -23,6 +23,7 @@ interface UsageDataSourcesSheetProps {
   onSessionAutoSyncEnabledChange?: (next: boolean) => void;
   /** 「刚刚同步」「N 分钟前同步」；还没手动同步过时为空 */
   syncedLabel?: string;
+  lastSyncAt?: number | null;
   syncing: boolean;
   onSyncNow: () => void;
   rebuildingCodex: boolean;
@@ -66,6 +67,7 @@ export function UsageDataSourcesSheet({
   sessionAutoSyncEnabled,
   onSessionAutoSyncEnabledChange,
   syncedLabel,
+  lastSyncAt,
   syncing,
   onSyncNow,
   rebuildingCodex,
@@ -81,6 +83,13 @@ export function UsageDataSourcesSheet({
   const cadence = sessionAutoSyncEnabled
     ? t("usage.sources.cadenceOn")
     : t("usage.sources.cadenceOff");
+  const effectiveSyncedLabel =
+    syncedLabel ??
+    (lastSyncAt == null
+      ? undefined
+      : t("usage.sources.lastSynced", {
+          time: formatRelativeTime(lastSyncAt, t, Date.now()),
+        }));
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -114,7 +123,11 @@ export function UsageDataSourcesSheet({
           >
             <ul className="m-0 flex list-none flex-col gap-1 rounded-control bg-subtle px-3 py-2.5 text-caption text-fg-2">
               <li>{t("usage.sources.coverage", { apps: coveredApps })}</li>
-              <li>{syncedLabel ? `${cadence} · ${syncedLabel}` : cadence}</li>
+              <li>
+                {effectiveSyncedLabel
+                  ? `${cadence} · ${effectiveSyncedLabel}`
+                  : cadence}
+              </li>
               <li>{t("usage.sources.unsupported")}</li>
             </ul>
             <div className="flex justify-end">

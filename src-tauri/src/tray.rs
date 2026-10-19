@@ -133,7 +133,9 @@ fn handle_menu_event(app: &AppHandle, id: &str) {
                 .expect("托盘同步时 AppState 尚未注册");
             tauri::async_runtime::spawn(async move {
                 // 用户明确要求同步：有扫描在跑就排在它后面，而不是静默丢掉这次点击。
-                let _guard = crate::services::session_usage::session_sync_mutex().lock().await;
+                let _guard = crate::services::session_usage::session_sync_mutex()
+                    .lock()
+                    .await;
                 let _ = tauri::async_runtime::spawn_blocking(move || {
                     crate::services::session_usage::sync_all_unlocked(&db)
                 })

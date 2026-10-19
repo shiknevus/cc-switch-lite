@@ -88,27 +88,48 @@ impl CostCalculator {
             usage.input_tokens
         };
 
+        let calc_part = |tokens: u64, price: Decimal| -> Decimal {
+            Decimal::from(tokens)
+                .checked_mul(price)
+                .and_then(|prod| prod.checked_div(million))
+                .unwrap_or(Decimal::ZERO)
+        };
+
         // 各项基础成本（不含倍率）
-        let input_cost =
-            Decimal::from(billable_input_tokens) * pricing.input_cost_per_million / million;
-        let output_cost =
-            Decimal::from(usage.output_tokens) * pricing.output_cost_per_million / million;
-        let cache_read_cost =
-            Decimal::from(usage.cache_read_tokens) * pricing.cache_read_cost_per_million / million;
+        let input_cost = calc_part(billable_input_tokens as u64, pricing.input_cost_per_million);
+        let output_cost = calc_part(usage.output_tokens as u64, pricing.output_cost_per_million);
+        let cache_read_cost = calc_part(
+            usage.cache_read_tokens as u64,
+            pricing.cache_read_cost_per_million,
+        );
+
         // Anthropic 5 分钟缓存写入为输入价 1.25 倍、1 小时写入为 2 倍；定价表的
         // cache_creation 单价对应 5 分钟写入，1 小时写入按其 1.6 倍计。
         let cache_creation_1h_tokens = usage
             .cache_creation_1h_tokens
             .min(usage.cache_creation_tokens);
-        let cache_creation_cost =
-            (Decimal::from(usage.cache_creation_tokens - cache_creation_1h_tokens)
-                + Decimal::from(cache_creation_1h_tokens) * Decimal::new(16, 1))
-                * pricing.cache_creation_cost_per_million
-                / million;
+        let weighted_creation_tokens =
+            Decimal::from(usage.cache_creation_tokens - cache_creation_1h_tokens)
+                .checked_add(
+                    Decimal::from(cache_creation_1h_tokens)
+                        .checked_mul(Decimal::new(16, 1))
+                        .unwrap_or(Decimal::ZERO),
+                )
+                .unwrap_or(Decimal::ZERO);
+        let cache_creation_cost = weighted_creation_tokens
+            .checked_mul(pricing.cache_creation_cost_per_million)
+            .and_then(|p| p.checked_div(million))
+            .unwrap_or(Decimal::ZERO);
 
         // 总成本 = 各项基础成本之和 × 倍率
-        let base_total = input_cost + output_cost + cache_read_cost + cache_creation_cost;
-        let total_cost = base_total * cost_multiplier;
+        let base_total = input_cost
+            .checked_add(output_cost)
+            .and_then(|s| s.checked_add(cache_read_cost))
+            .and_then(|s| s.checked_add(cache_creation_cost))
+            .unwrap_or(Decimal::MAX);
+        let total_cost = base_total
+            .checked_mul(cost_multiplier)
+            .unwrap_or(Decimal::MAX);
 
         CostBreakdown {
             input_cost,

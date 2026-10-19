@@ -84,32 +84,33 @@ fn parse_stored_bool(value: &str, default: bool) -> bool {
 
 pub fn get_settings_from_db(db: &Database) -> Result<AppSettings, AppError> {
     let mut settings = AppSettings::default();
+    let map = db.get_all_settings()?;
 
-    if let Some(lang) = db.get_setting("language")? {
-        settings.language = lang;
+    if let Some(lang) = map.get("language") {
+        settings.language = lang.clone();
     }
-    if let Some(theme) = db.get_setting("theme")? {
-        settings.theme = theme;
+    if let Some(theme) = map.get("theme") {
+        settings.theme = theme.clone();
     }
-    if let Some(interval) = db.get_setting("usage_dashboard_refresh_interval_ms")? {
+    if let Some(interval) = map.get("usage_dashboard_refresh_interval_ms") {
         if let Ok(val) = interval.parse::<u64>() {
             settings.usage_dashboard_refresh_interval_ms = val;
         }
     }
-    if let Some(auto_sync) = db.get_setting("session_auto_sync_enabled")? {
-        settings.session_auto_sync_enabled = parse_stored_bool(&auto_sync, true);
+    if let Some(auto_sync) = map.get("session_auto_sync_enabled") {
+        settings.session_auto_sync_enabled = parse_stored_bool(auto_sync, true);
     }
-    if let Some(minimize) = db.get_setting("minimize_to_tray_on_close")? {
-        settings.minimize_to_tray_on_close = parse_stored_bool(&minimize, true);
+    if let Some(minimize) = map.get("minimize_to_tray_on_close") {
+        settings.minimize_to_tray_on_close = parse_stored_bool(minimize, true);
     }
-    if let Some(launch) = db.get_setting("launch_on_startup")? {
-        settings.launch_on_startup = parse_stored_bool(&launch, false);
+    if let Some(launch) = map.get("launch_on_startup") {
+        settings.launch_on_startup = parse_stored_bool(launch, false);
     }
-    if let Some(silent) = db.get_setting("silent_startup")? {
-        settings.silent_startup = parse_stored_bool(&silent, false);
+    if let Some(silent) = map.get("silent_startup") {
+        settings.silent_startup = parse_stored_bool(silent, false);
     }
-    if let Some(display_json) = db.get_setting("usage_display")? {
-        if let Ok(display) = serde_json::from_str::<UsageDisplaySettings>(&display_json) {
+    if let Some(display_json) = map.get("usage_display") {
+        if let Ok(display) = serde_json::from_str::<UsageDisplaySettings>(display_json) {
             settings.usage_display = Some(display);
         }
     }
@@ -139,28 +140,44 @@ pub fn save_settings_to_db(db: &Database, settings: &AppSettings) -> Result<(), 
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
         rusqlite::params![
             "session_auto_sync_enabled",
-            if settings.session_auto_sync_enabled { "true" } else { "false" }
+            if settings.session_auto_sync_enabled {
+                "true"
+            } else {
+                "false"
+            }
         ],
     )?;
     tx.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
         rusqlite::params![
             "minimize_to_tray_on_close",
-            if settings.minimize_to_tray_on_close { "true" } else { "false" }
+            if settings.minimize_to_tray_on_close {
+                "true"
+            } else {
+                "false"
+            }
         ],
     )?;
     tx.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
         rusqlite::params![
             "launch_on_startup",
-            if settings.launch_on_startup { "true" } else { "false" }
+            if settings.launch_on_startup {
+                "true"
+            } else {
+                "false"
+            }
         ],
     )?;
     tx.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
         rusqlite::params![
             "silent_startup",
-            if settings.silent_startup { "true" } else { "false" }
+            if settings.silent_startup {
+                "true"
+            } else {
+                "false"
+            }
         ],
     )?;
     if let Some(ref display) = settings.usage_display {
@@ -176,6 +193,7 @@ pub fn save_settings_to_db(db: &Database, settings: &AppSettings) -> Result<(), 
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use crate::database::Database;
@@ -184,7 +202,11 @@ mod tests {
     #[test]
     fn minimize_to_tray_defaults_on_for_existing_db() {
         let db = Database::memory().expect("内存库");
-        assert!(get_settings_from_db(&db).expect("读取设置").minimize_to_tray_on_close);
+        assert!(
+            get_settings_from_db(&db)
+                .expect("读取设置")
+                .minimize_to_tray_on_close
+        );
     }
 
     /// 开关关掉后要能存下来、读回来，否则用户取消勾选后关窗仍然不退出。
@@ -195,11 +217,19 @@ mod tests {
         let mut settings = AppSettings::default();
         settings.minimize_to_tray_on_close = false;
         save_settings_to_db(&db, &settings).expect("保存设置");
-        assert!(!get_settings_from_db(&db).expect("读取设置").minimize_to_tray_on_close);
+        assert!(
+            !get_settings_from_db(&db)
+                .expect("读取设置")
+                .minimize_to_tray_on_close
+        );
 
         settings.minimize_to_tray_on_close = true;
         save_settings_to_db(&db, &settings).expect("保存设置");
-        assert!(get_settings_from_db(&db).expect("读取设置").minimize_to_tray_on_close);
+        assert!(
+            get_settings_from_db(&db)
+                .expect("读取设置")
+                .minimize_to_tray_on_close
+        );
     }
 
     /// 前端传 camelCase、库里存 "true"/"false" 字符串，两边都要认。
@@ -208,7 +238,11 @@ mod tests {
         let db = Database::memory().expect("内存库");
         db.set_setting("minimize_to_tray_on_close", "false")
             .expect("写设置");
-        assert!(!get_settings_from_db(&db).expect("读取设置").minimize_to_tray_on_close);
+        assert!(
+            !get_settings_from_db(&db)
+                .expect("读取设置")
+                .minimize_to_tray_on_close
+        );
 
         let parsed: AppSettings =
             serde_json::from_str(r#"{"minimizeToTrayOnClose":false}"#).expect("解析设置");

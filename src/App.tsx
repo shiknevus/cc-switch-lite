@@ -19,7 +19,6 @@ import { toast } from "@/lib/toast";
 import { extractErrorMessage } from "@/utils/errorUtils";
 import { WindowControlsContext } from "@/components/shell/AppPageHeader";
 import { WindowControls } from "@/components/shell/WindowControls";
-import { isMac } from "@/lib/platform";
 import { syncModelsDevPricingOnStartup } from "@/lib/modelsDevAutoSync";
 
 export default function App() {
@@ -73,6 +72,8 @@ export default function App() {
    * 而系统里没登记，界面就会显示已开启但重启后并不自启。失败时保持原状并提示。
    */
   const applyAutoLaunch = async (enabled: boolean, silent: boolean) => {
+    const previousEnabled = settings?.launchOnStartup ?? false;
+    const previousSilent = settings?.silentStartup ?? false;
     try {
       await settingsApi.setAutoLaunch(enabled, silent);
     } catch (error) {
@@ -84,7 +85,20 @@ export default function App() {
       );
       return;
     }
-    await autoSaveSettings({ launchOnStartup: enabled, silentStartup: silent });
+    const saved = await autoSaveSettings({
+      launchOnStartup: enabled,
+      silentStartup: silent,
+    });
+    if (!saved) {
+      try {
+        await settingsApi.setAutoLaunch(previousEnabled, previousSilent);
+      } catch (rollbackError) {
+        console.error(
+          "Failed to roll back auto-launch after settings persistence failure",
+          rollbackError,
+        );
+      }
+    }
   };
 
   const handleLanguageChange = (lang: string) => {
@@ -112,7 +126,7 @@ export default function App() {
             variant="ghost"
             size="icon"
             className="h-7 w-7 text-fg-3 hover:text-fg"
-            title="Language"
+            title={t("settings.language", { defaultValue: "Language" })}
           >
             <Globe className="h-4 w-4" />
           </Button>
@@ -141,10 +155,10 @@ export default function App() {
         onClick={cycleTheme}
         title={
           theme === "dark"
-            ? "Switch to light"
+            ? t("settings.themeSwitchLight", { defaultValue: "Switch to light" })
             : theme === "light"
-              ? "Switch to system"
-              : "Switch to dark"
+              ? t("settings.themeSwitchSystem", { defaultValue: "Switch to system" })
+              : t("settings.themeSwitchDark", { defaultValue: "Switch to dark" })
         }
       >
         {theme === "dark" ? (
@@ -159,23 +173,23 @@ export default function App() {
   );
 
   return (
-    <WindowControlsContext.Provider value={isMac() ? null : <WindowControls />}>
-      <div className="flex h-screen w-screen flex-col bg-bg text-fg select-none overflow-hidden">
+    <WindowControlsContext.Provider value={<WindowControls />}>
+      <div className="flex h-screen w-screen flex-col bg-bg text-fg select-text overflow-hidden">
       {/* 主体用量仪表盘 */}
       <div className="min-h-0 flex-1 overflow-y-auto overflow-x-auto">
         <UsageDashboard
           refreshIntervalMs={settings?.usageDashboardRefreshIntervalMs}
           onRefreshIntervalChange={(usageDashboardRefreshIntervalMs) => {
-            void autoSaveSettings({ usageDashboardRefreshIntervalMs });
+            return autoSaveSettings({ usageDashboardRefreshIntervalMs });
           }}
           sessionAutoSyncEnabled={settings?.sessionAutoSyncEnabled ?? true}
           settingsReady={settings != null}
           onSessionAutoSyncEnabledChange={(sessionAutoSyncEnabled) => {
-            void autoSaveSettings({ sessionAutoSyncEnabled });
+            return autoSaveSettings({ sessionAutoSyncEnabled });
           }}
           minimizeToTrayOnClose={settings?.minimizeToTrayOnClose ?? true}
           onMinimizeToTrayOnCloseChange={(minimizeToTrayOnClose) => {
-            void autoSaveSettings({ minimizeToTrayOnClose });
+            return autoSaveSettings({ minimizeToTrayOnClose });
           }}
           launchOnStartup={settings?.launchOnStartup ?? false}
           onLaunchOnStartupChange={(launchOnStartup) => {
@@ -194,7 +208,7 @@ export default function App() {
           }}
           usageDisplay={settings?.usageDisplay}
           onUsageDisplayChange={(usageDisplay) => {
-            void autoSaveSettings({ usageDisplay });
+            return autoSaveSettings({ usageDisplay });
           }}
           headerExtraActions={extraActions}
         />

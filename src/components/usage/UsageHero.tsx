@@ -268,7 +268,7 @@ export function UsageHero({
                     : formatTokensCompact(cacheWrite, locale)
                 }
                 title={
-                  cacheWriteState === "na" ? undefined : fmtInt(cacheWrite)
+                  cacheWriteState === "na" ? undefined : fmtInt(cacheWrite, locale)
                 }
                 muted={cacheWriteState === "na"}
                 help={

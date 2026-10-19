@@ -60,11 +60,11 @@ const errorText = (error: unknown) =>
       ? error
       : "Unknown error";
 
-/** 「$4.00」「$0.075」：至少两位小数，多余的 0 去掉，最多 4 位。 */
+/** 「$4.00」「$0.075」「$0.00002」：至少两位小数，多余的 0 去掉，最多 6 位。 */
 export function formatUnitPrice(value: string): string {
   const num = parseFiniteNumber(value);
   if (num == null) return `$${value}`;
-  const fixed = num.toFixed(4).replace(/0+$/, "");
+  const fixed = num.toFixed(6).replace(/0+$/, "");
   const [whole, frac = ""] = fixed.split(".");
   return `$${whole}.${frac.padEnd(2, "0")}`;
 }

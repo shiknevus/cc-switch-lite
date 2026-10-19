@@ -13,6 +13,7 @@ use crate::database::{lock_conn, Database};
 use crate::error::AppError;
 use crate::proxy::usage::calculator::{CostCalculator, ModelPricing};
 use crate::proxy::usage::parser::{claude_cache_creation_1h_tokens, TokenUsage};
+use crate::services::sql_helpers::INPUT_TOKEN_SEMANTICS_FRESH;
 use crate::services::usage_stats::{
     effective_usage_log_filter, find_model_pricing, has_matching_proxy_usage_log, DedupKey,
 };
@@ -213,6 +214,34 @@ const MIN_PLAUSIBLE_LATENCY_MS: i64 = 100;
 
 /// 估算出的请求耗时长于这个毫秒数也不要：中间多半夹了休眠或长时间的重试等待。
 const MAX_PLAUSIBLE_LATENCY_MS: i64 = 60 * 60 * 1000;
+const MAX_CLAUDE_LINE_BYTES: usize = 8 * 1024 * 1024;
+
+fn read_line_limited(reader: &mut impl BufRead, buffer: &mut Vec<u8>) -> std::io::Result<usize> {
+    buffer.clear();
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return Ok(buffer.len());
+        }
+
+        let take = available
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(available.len(), |index| index + 1);
+        if buffer.len().saturating_add(take) > MAX_CLAUDE_LINE_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Claude session line exceeds the safety limit",
+            ));
+        }
+
+        buffer.extend_from_slice(&available[..take]);
+        reader.consume(take);
+        if buffer.last() == Some(&b'\n') {
+            return Ok(buffer.len());
+        }
+    }
+}
 
 /// 会话日志没有请求计时，耗时只能拿两个时间戳相减估出来（含首字等待）。
 /// 落在合理范围之外的返回 None，入库时写 0，表示没有计时。
@@ -638,7 +667,12 @@ fn sync_single_file(
     let last_fingerprint = cursor.and_then(|c| c.last_tail_fingerprint);
 
     // 文件未变化则跳过
-    if file_modified <= last_modified {
+    let unchanged = if let Some(offset) = last_byte_offset {
+        file_modified <= last_modified && offset == file_size
+    } else {
+        file_modified <= last_modified
+    };
+    if unchanged {
         return Ok(ClaudeFileSync::default());
     }
 
@@ -713,8 +747,7 @@ fn sync_single_file(
     let mut skipped_legacy_lines: i64 = 0;
     while skipped_legacy_lines < legacy_lines {
         buf.clear();
-        let read = reader
-            .read_until(b'\n', &mut buf)
+        let read = read_line_limited(&mut reader, &mut buf)
             .map_err(|e| AppError::Config(format!("转换旧行号游标失败: {e}")))?;
         if read == 0 {
             break;
@@ -730,9 +763,32 @@ fn sync_single_file(
 
     loop {
         buf.clear();
-        let read = match reader.read_until(b'\n', &mut buf) {
+        let read = match read_line_limited(&mut reader, &mut buf) {
             Ok(0) => break,
             Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                log::warn!("[CLAUDE-SYNC] 遇到超长行，跳过该行并推进游标: {e}");
+                let mut skipped = buf.len() as i64;
+                loop {
+                    let available = match reader.fill_buf() {
+                        Ok([]) => break,
+                        Ok(b) => b,
+                        Err(_) => break,
+                    };
+                    if let Some(pos) = available.iter().position(|b| *b == b'\n') {
+                        let take = pos + 1;
+                        skipped += take as i64;
+                        reader.consume(take);
+                        break;
+                    } else {
+                        let take = available.len();
+                        skipped += take as i64;
+                        reader.consume(take);
+                    }
+                }
+                committed_offset += skipped;
+                continue;
+            }
             Err(e) => {
                 // IO 错误：已提交的部分照常入库；游标写旧 mtime 让下轮
                 // mtime 门放行、从 committed_offset 续读（见写入处）。
@@ -959,10 +1015,16 @@ fn update_claude_sync_state_on_conn(
         .unwrap_or(0);
 
     conn.prepare_cached(
-        "INSERT OR REPLACE INTO session_log_sync
+        "INSERT INTO session_log_sync
              (file_path, last_modified, last_line_offset, last_synced_at, last_byte_offset,
-              last_tail_fingerprint)
-         VALUES (?1, ?2, 0, ?3, ?4, ?5)",
+              last_tail_fingerprint, importer)
+         VALUES (?1, ?2, 0, ?3, ?4, ?5, 'claude')
+         ON CONFLICT(file_path) DO UPDATE SET
+             last_modified = excluded.last_modified,
+             last_synced_at = excluded.last_synced_at,
+             last_byte_offset = excluded.last_byte_offset,
+             last_tail_fingerprint = excluded.last_tail_fingerprint,
+             importer = COALESCE(excluded.importer, session_log_sync.importer)",
     )
     .and_then(|mut stmt| {
         stmt.execute(rusqlite::params![
@@ -1004,6 +1066,18 @@ pub(crate) fn metadata_modified_nanos(metadata: &fs::Metadata) -> i64 {
         .unwrap_or(0)
 }
 
+/// 更新 session_log_sync 表中某条目的同步进度（支持记录来源 importer）。
+pub(crate) fn update_sync_state_with_importer(
+    db: &Database,
+    file_path: &str,
+    last_modified: i64,
+    last_offset: i64,
+    importer: Option<&str>,
+) -> Result<(), AppError> {
+    let conn = lock_conn!(db.conn);
+    update_sync_state_importer_on_conn(&conn, file_path, last_modified, last_offset, importer)
+}
+
 /// 更新 session_log_sync 表中某条目的同步进度。
 ///
 /// Shared by all session_usage_* parsers.
@@ -1013,17 +1087,17 @@ pub(crate) fn update_sync_state(
     last_modified: i64,
     last_offset: i64,
 ) -> Result<(), AppError> {
-    let conn = lock_conn!(db.conn);
-    update_sync_state_on_conn(&conn, file_path, last_modified, last_offset)
+    update_sync_state_with_importer(db, file_path, last_modified, last_offset, None)
 }
 
 /// [`update_sync_state`] 的免锁版本，供调用方在已持锁的事务内把游标推进
 /// 与数据插入绑成原子提交。
-pub(crate) fn update_sync_state_on_conn(
+pub(crate) fn update_sync_state_importer_on_conn(
     conn: &rusqlite::Connection,
     file_path: &str,
     last_modified: i64,
     last_offset: i64,
+    importer: Option<&str>,
 ) -> Result<(), AppError> {
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -1031,12 +1105,26 @@ pub(crate) fn update_sync_state_on_conn(
         .unwrap_or(0);
 
     conn.prepare_cached(
-        "INSERT OR REPLACE INTO session_log_sync (file_path, last_modified, last_line_offset, last_synced_at)
-         VALUES (?1, ?2, ?3, ?4)",
+        "INSERT INTO session_log_sync (file_path, last_modified, last_line_offset, last_synced_at, importer)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(file_path) DO UPDATE SET
+             last_modified = excluded.last_modified,
+             last_line_offset = excluded.last_line_offset,
+             last_synced_at = excluded.last_synced_at,
+             importer = COALESCE(excluded.importer, session_log_sync.importer)",
     )
-    .and_then(|mut stmt| stmt.execute(rusqlite::params![file_path, last_modified, last_offset, now]))
+    .and_then(|mut stmt| stmt.execute(rusqlite::params![file_path, last_modified, last_offset, now, importer]))
     .map_err(|e| AppError::Database(format!("更新同步状态失败: {e}")))?;
     Ok(())
+}
+
+pub(crate) fn update_sync_state_on_conn(
+    conn: &rusqlite::Connection,
+    file_path: &str,
+    last_modified: i64,
+    last_offset: i64,
+) -> Result<(), AppError> {
+    update_sync_state_importer_on_conn(conn, file_path, last_modified, last_offset, None)
 }
 
 /// 一条回复写库的结果。
@@ -1288,8 +1376,9 @@ fn upsert_session_log_entry_on_conn(
             input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
             input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd, total_cost_usd,
             latency_ms, first_token_ms, status_code, error_message, session_id,
-            provider_type, is_streaming, cost_multiplier, created_at, data_source
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
+            provider_type, is_streaming, cost_multiplier, created_at, data_source,
+            input_token_semantics
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
             rusqlite::params![
                 request_id,
                 "_session",         // provider_id: 标记为会话来源
@@ -1315,6 +1404,7 @@ fn upsert_session_log_entry_on_conn(
                 "1.0",              // cost_multiplier
                 created_at,
                 "session_log",      // data_source
+                INPUT_TOKEN_SEMANTICS_FRESH, // input_token_semantics: Claude input_tokens 不包含 cache
             ],
         )
         .map_err(|e| AppError::Database(format!("插入会话日志失败: {e}")))?;
@@ -1369,6 +1459,20 @@ pub fn get_data_source_breakdown(db: &Database) -> Result<Vec<DataSourceSummary>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn read_line_limited_accepts_boundary_and_rejects_oversized_records() {
+        let mut boundary = std::io::Cursor::new(vec![b'x'; MAX_CLAUDE_LINE_BYTES]);
+        let mut buffer = Vec::new();
+        assert_eq!(
+            read_line_limited(&mut boundary, &mut buffer).expect("boundary line"),
+            MAX_CLAUDE_LINE_BYTES
+        );
+
+        let mut oversized = std::io::Cursor::new(vec![b'x'; MAX_CLAUDE_LINE_BYTES + 1]);
+        let error = read_line_limited(&mut oversized, &mut buffer).expect_err("oversized line");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    }
 
     fn pricing_test_message(model: &str) -> ParsedAssistantUsage {
         ParsedAssistantUsage {

@@ -83,7 +83,9 @@ export function PerformanceCells({
   return (
     <>
       <td className={usageTable.td}>
-        {stat.successRate.toFixed(stat.successRate >= 99.95 ? 0 : 1)}%
+        {stat.successRate == null || !Number.isFinite(stat.successRate)
+          ? "—"
+          : `${stat.successRate.toFixed(stat.successRate >= 99.95 ? 0 : 1)}%`}
       </td>
       <td className={cn(usageTable.td, speed == null && usageTable.muted)}>
         {speed == null ? (

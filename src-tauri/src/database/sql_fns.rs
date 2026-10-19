@@ -21,7 +21,9 @@ impl Aggregate<Decimal, f64> for DecimalSum {
     }
 
     fn step(&self, ctx: &mut Context<'_>, sum: &mut Decimal) -> rusqlite::Result<()> {
-        *sum += decimal_value(ctx.get_raw(0));
+        *sum = sum
+            .checked_add(decimal_value(ctx.get_raw(0)))
+            .unwrap_or(Decimal::MAX);
         Ok(())
     }
 
@@ -43,7 +45,9 @@ pub(crate) fn register_decimal_functions(conn: &Connection) -> Result<(), AppErr
         2,
         FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
         |ctx| {
-            let sum = decimal_value(ctx.get_raw(0)) + decimal_value(ctx.get_raw(1));
+            let sum = decimal_value(ctx.get_raw(0))
+                .checked_add(decimal_value(ctx.get_raw(1)))
+                .unwrap_or(Decimal::MAX);
             Ok(sum.normalize().to_string())
         },
     )
@@ -55,7 +59,9 @@ fn decimal_value(value: ValueRef<'_>) -> Decimal {
     match value {
         ValueRef::Null => Decimal::ZERO,
         ValueRef::Integer(number) => Decimal::from(number),
-        ValueRef::Real(number) => Decimal::from_str(&format!("{number:.12}")).unwrap_or(Decimal::ZERO),
+        ValueRef::Real(number) => {
+            Decimal::from_str(&format!("{number:.12}")).unwrap_or(Decimal::ZERO)
+        }
         ValueRef::Text(bytes) => std::str::from_utf8(bytes)
             .ok()
             .and_then(|text| Decimal::from_str(text.trim()).ok())
@@ -79,16 +85,14 @@ mod tests {
         )
         .expect("seed");
         let sum: f64 = conn
-            .query_row("SELECT decimal_sum(amount) FROM costs", [], |row| row.get(0))
+            .query_row("SELECT decimal_sum(amount) FROM costs", [], |row| {
+                row.get(0)
+            })
             .expect("sum");
         assert!((sum - 0.3).abs() < 1e-12);
 
         let text: String = conn
-            .query_row(
-                "SELECT decimal_add('0.10', '0.20')",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT decimal_add('0.10', '0.20')", [], |row| row.get(0))
             .expect("add");
         assert_eq!(text, "0.3");
     }

@@ -25,8 +25,8 @@ export function useSettingsQuery() {
 export function useUpdateSettingsMutation() {
   return useMutation({
     mutationFn: (settings: Settings) => settingsApi.save(settings),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: settingsKeys.all });
+    onSuccess: (_, settings) => {
+      queryClient.setQueryData(settingsKeys.all, settings);
     },
   });
 }

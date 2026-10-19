@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { useRequestLogs } from "@/lib/query/usage";
 import { TablePagination } from "./TablePagination";
@@ -167,8 +167,17 @@ export function RequestLogTable({
 }: RequestLogTableProps) {
   const { t, i18n } = useTranslation();
   const { money, usdHint } = useMoneyFormat();
-  const [page, setPage] = useState(0);
+  const [rawPage, setPage] = useState(0);
   const pageSize = 20;
+
+  const filterKey = `${dashboardAppType ?? ""}:${providerName ?? ""}:${model ?? ""}:${statusCode ?? ""}:${range.preset}:${range.customStartDate ?? ""}:${range.customEndDate ?? ""}`;
+  const [prevFilterKey, setPrevFilterKey] = useState(filterKey);
+  let page = rawPage;
+  if (prevFilterKey !== filterKey) {
+    setPrevFilterKey(filterKey);
+    setPage(0);
+    page = 0;
+  }
 
   const effectiveFilters: LogFilters = {
     appType:
@@ -195,16 +204,10 @@ export function RequestLogTable({
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
   useEffect(() => {
-    setPage(0);
-  }, [
-    dashboardAppType,
-    providerName,
-    model,
-    statusCode,
-    range.customEndDate,
-    range.customStartDate,
-    range.preset,
-  ]);
+    if (page >= totalPages && totalPages > 0) {
+      setPage(totalPages - 1);
+    }
+  }, [page, totalPages]);
 
   const language = i18n.resolvedLanguage || i18n.language || "en";
   const locale = getLocaleFromLanguage(language);
@@ -218,17 +221,20 @@ export function RequestLogTable({
   // 带说明的列在表头挂「?」，其余只写列名
   const headerHelp: Partial<
     Record<RequestLogColumnId, { title: string; body: string }>
-  > = {
-    hitRate: {
-      title: t("usage.metrics.hitRateHelpTitle"),
-      body: t("usage.metrics.hitRateHelp"),
-    },
-    speed: { title: t("usage.speedHelpTitle"), body: t("usage.speedHelp") },
-    firstToken: {
-      title: t("usage.firstTokenHelpTitle"),
-      body: t("usage.firstTokenHelp"),
-    },
-  };
+  > = useMemo(
+    () => ({
+      hitRate: {
+        title: t("usage.metrics.hitRateHelpTitle"),
+        body: t("usage.metrics.hitRateHelp"),
+      },
+      speed: { title: t("usage.speedHelpTitle"), body: t("usage.speedHelp") },
+      firstToken: {
+        title: t("usage.firstTokenHelpTitle"),
+        body: t("usage.firstTokenHelp"),
+      },
+    }),
+    [t],
+  );
   const renderHeader = (id: RequestLogColumnId) => {
     const label = t(REQUEST_LOG_COLUMN_LABEL_KEYS[id]);
     const help = headerHelp[id];

@@ -1,4 +1,4 @@
-import { Fragment, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ChevronDown, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -263,6 +263,15 @@ export function UsageHeatmap({
     refreshIntervalMs,
   );
 
+  const [todayKey, setTodayKey] = useState(() => dayKey(new Date()));
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const current = dayKey(new Date());
+      setTodayKey((prev) => (prev !== current ? current : prev));
+    }, 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
   const heat = useMemo(() => {
     const byDay = new Map<string, UsageTrendStatLike>();
     for (const stat of trends ?? []) {
@@ -280,7 +289,7 @@ export function UsageHeatmap({
     const thresholds = buildThresholds(days.map((cell) => cell.value));
 
     return { spans, thresholds };
-  }, [trends, metric, spanCount]);
+  }, [trends, metric, spanCount, todayKey]);
 
   const earlierCount = heat.spans.length - 1;
   const visibleSpans = showEarlier ? heat.spans : heat.spans.slice(0, 1);

@@ -992,8 +992,9 @@ pub fn sync_codex_usage(db: &Database) -> Result<SessionSyncResult, AppError> {
     let mut pass = CodexSyncPass::load(db)?;
     // Existing installs may have rows created before tool-call timing was treated
     // as first-token output. Run one incremental backfill pass for those rows.
-    let force_timing_backfill =
-        db.get_setting(CODEX_FIRST_TOKEN_BACKFILL_SETTING)?.is_none();
+    let force_timing_backfill = db
+        .get_setting(CODEX_FIRST_TOKEN_BACKFILL_SETTING)?
+        .is_none();
 
     let mut result = SessionSyncResult {
         imported: 0,
@@ -1897,10 +1898,7 @@ fn update_codex_sync_state(
 }
 
 /// 同步单个 Codex JSONL 文件。
-fn codex_file_has_missing_timing(
-    db: &Database,
-    file_path: &Path,
-) -> Result<bool, AppError> {
+fn codex_file_has_missing_timing(db: &Database, file_path: &Path) -> Result<bool, AppError> {
     let ids = [
         thread_id_from_filename(file_path),
         leading_thread_id_from_filename(file_path),
@@ -1940,9 +1938,7 @@ fn backfill_codex_timings(
         let Some(first_token_ms) = timing.first_token_ms else {
             continue;
         };
-        let request_id = format!(
-            "{CODEX_THREAD_REQUEST_ID_PREFIX}:{root_thread_id}:{event_index}"
-        );
+        let request_id = format!("{CODEX_THREAD_REQUEST_ID_PREFIX}:{root_thread_id}:{event_index}");
         tx.execute(
             "UPDATE proxy_request_logs
              SET latency_ms = CASE WHEN latency_ms = 0 THEN ?1 ELSE latency_ms END,
@@ -1976,10 +1972,9 @@ fn sync_single_codex_file(
     // Windows may keep mtime unchanged while Codex holds its write handle open.
     // Legacy cursors have no byte offset: rescan once to catch up and persist it.
     let last_byte_offset = pass.byte_offsets.get(&file_path_str).copied().flatten();
-    let unchanged = file_modified == last_modified
-        && last_byte_offset == i64::try_from(file_size).ok();
-    if unchanged
-        && (!force_timing_backfill || !codex_file_has_missing_timing(db, file_path)?) {
+    let unchanged =
+        file_modified == last_modified && last_byte_offset == i64::try_from(file_size).ok();
+    if unchanged && (!force_timing_backfill || !codex_file_has_missing_timing(db, file_path)?) {
         return Ok(CodexFileSyncResult::default());
     }
 
@@ -2642,13 +2637,7 @@ mod tests {
             .map(|path| path.to_path_buf())
             .collect::<Vec<_>>();
         let mut pass = CodexSyncPass::load(db)?;
-        sync_single_codex_file(
-            db,
-            file,
-            &build_rollout_index(&files),
-            &mut pass,
-            false,
-        )
+        sync_single_codex_file(db, file, &build_rollout_index(&files), &mut pass, false)
     }
 
     fn assert_unchanged_codex_file_is_skipped(db: &Database, file: &Path) -> Result<(), AppError> {
@@ -6037,7 +6026,10 @@ mod tests {
             parsed_latencies(&lines),
             vec![Some(5_100), Some(2_999), Some(1_999)]
         );
-        assert_eq!(parsed_first_tokens(&lines), vec![Some(2_200), Some(2_899), None]);
+        assert_eq!(
+            parsed_first_tokens(&lines),
+            vec![Some(2_200), Some(2_899), None]
+        );
 
         // 推出来的首字要落进库里
         let dir = tempdir().unwrap();

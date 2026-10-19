@@ -13,15 +13,20 @@ use std::sync::Mutex;
 
 macro_rules! lock_conn {
     ($mutex:expr) => {
-        $mutex
-            .lock()
-            .map_err(|e| AppError::Database(format!("Mutex lock failed: {}", e)))?
+        $mutex.lock().unwrap_or_else(|e| {
+            log::error!(
+                "Database mutex poisoned: {}, recovering inner connection",
+                e
+            );
+            e.into_inner()
+        })
     };
 }
 
 pub(crate) use lock_conn;
 
 pub struct Database {
+    pub(crate) db_path: Option<std::path::PathBuf>,
     pub(crate) conn: Mutex<Connection>,
     pub(crate) log_count_cache: Mutex<Option<crate::services::usage_stats::LogCountCache>>,
 }
@@ -36,15 +41,27 @@ impl Database {
 
         let conn = Connection::open(&db_path)?;
 
+        let journal_mode: String = conn
+            .query_row("PRAGMA journal_mode = WAL;", [], |r| r.get(0))
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        if journal_mode.to_lowercase() != "wal" {
+            log::warn!("SQLite WAL journal mode not available ({journal_mode}), falling back to synchronous = FULL");
+            conn.execute_batch("PRAGMA synchronous = FULL;")?;
+        } else {
+            conn.execute_batch("PRAGMA synchronous = NORMAL;")?;
+        }
+
         conn.execute_batch(
-            "PRAGMA journal_mode = WAL;
-             PRAGMA synchronous = NORMAL;
-             PRAGMA foreign_keys = ON;
-             PRAGMA busy_timeout = 5000;",
+            "PRAGMA cache_size = -65536;
+             PRAGMA mmap_size = 268435456;
+             PRAGMA temp_store = MEMORY;
+             PRAGMA busy_timeout = 5000;
+             PRAGMA optimize;",
         )?;
         sql_fns::register_decimal_functions(&conn)?;
 
         let db = Self {
+            db_path: Some(db_path),
             conn: Mutex::new(conn),
             log_count_cache: Mutex::new(None),
         };
@@ -59,6 +76,7 @@ impl Database {
         let conn = Connection::open_in_memory()?;
         sql_fns::register_decimal_functions(&conn)?;
         let db = Self {
+            db_path: None,
             conn: Mutex::new(conn),
             log_count_cache: Mutex::new(None),
         };
