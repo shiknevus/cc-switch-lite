@@ -1,5 +1,5 @@
-import { emit } from "@tauri-apps/api/event";
-﻿import { useEffect, useState } from "react";
+import { emit, emitTo, listen } from "@tauri-apps/api/event";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -71,8 +71,30 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    syncLanguageFromSettings(settings?.language);
-  }, [settings?.language]);
+    if (settings?.language) {
+      syncLanguageFromSettings(settings.language);
+      if (i18n.language !== settings.language) {
+        void i18n.changeLanguage(settings.language);
+      }
+    }
+  }, [settings?.language, i18n]);
+
+  // 监听全通道语言变更事件（来自托盘、Rust 广播或其它窗口）
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<{ language: string }>("app-language-changed", (event) => {
+      const nextLang = event.payload?.language;
+      if (nextLang && nextLang !== i18n.language) {
+        syncLanguageFromSettings(nextLang);
+        void i18n.changeLanguage(nextLang);
+      }
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => {
+      unlisten?.();
+    };
+  }, [i18n]);
 
   // 只在后端设置变化时套用主题
   useEffect(() => {
@@ -126,10 +148,13 @@ export default function App() {
     }
   };
 
-  const handleLanguageChange = (lang: string) => {
-    i18n.changeLanguage(lang);
+  const handleLanguageChange = async (lang: string) => {
+    syncLanguageFromSettings(lang);
+    await i18n.changeLanguage(lang);
     void autoSaveSettings({ language: lang });
     void emit("app-language-changed", { language: lang });
+    void emitTo("float_bar", "app-language-changed", { language: lang });
+    void emitTo("main", "app-language-changed", { language: lang });
   };
 
   const cycleTheme = () => {

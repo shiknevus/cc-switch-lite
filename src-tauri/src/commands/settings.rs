@@ -1,6 +1,6 @@
 use crate::settings::{get_settings_from_db, save_settings_to_db, AppSettings};
 use crate::store::AppState;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 
 #[tauri::command]
 pub async fn get_settings(state: State<'_, AppState>) -> Result<AppSettings, String> {
@@ -18,10 +18,17 @@ pub async fn save_settings(
     settings: AppSettings,
 ) -> Result<bool, String> {
     let db = state.db.clone();
-    tauri::async_runtime::spawn_blocking(move || save_settings_to_db(&db, &settings))
+    let settings_clone = settings.clone();
+    tauri::async_runtime::spawn_blocking(move || save_settings_to_db(&db, &settings_clone))
         .await
         .map_err(|error| format!("保存设置任务失败: {error}"))?
         .map_err(|e| e.to_string())?;
+
+    let lang_payload = serde_json::json!({ "language": settings.language });
+    let _ = app.emit("app-language-changed", lang_payload.clone());
+    let _ = app.emit_to("float_bar", "app-language-changed", lang_payload.clone());
+    let _ = app.emit_to("main", "app-language-changed", lang_payload);
+
     if let Err(error) = crate::tray::create_tray(&app) {
         log::warn!("刷新系统托盘菜单失败: {error}");
     }

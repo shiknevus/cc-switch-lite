@@ -17,10 +17,11 @@ import { useSettings } from "@/hooks/useSettings";
 import { useMoneyFormat } from "@/hooks/useMoneyFormat";
 import { useUsageEventBridge } from "@/hooks/useUsageEventBridge";
 import { useUsageSummary, useUsageSummaryByApp } from "@/lib/query/usage";
+import { queryClient, settingsKeys } from "@/lib/query";
 import { formatTokensCompact } from "@/components/usage/format";
 import { AppGlyph } from "@/components/shell/AppGlyph";
 import { syncLanguageFromSettings } from "@/i18n";
-import type { AppId } from "@/types";
+import type { AppId, Settings } from "@/types";
 import type { UsageRangeSelection } from "@/types/usage";
 import { usageApi } from "@/lib/api/usage";
 
@@ -32,12 +33,39 @@ export function FloatBar() {
   const { money } = useMoneyFormat();
   useUsageEventBridge();
 
+  // 显式维护当前窗口语言状态，确保双向广播时百分之百强制局部与全局即时刷新
+  const [currentLang, setCurrentLang] = useState<string>(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const stored = window.localStorage.getItem("language");
+        if (stored) return stored;
+      } catch {}
+    }
+    return i18n.language || "zh";
+  });
+
   const isPinned = settings?.floatBarPinned ?? false;
   const autoHide = settings?.floatBarAutoHide ?? true;
 
   const [expanded, setExpanded] = useState<boolean>(isPinned);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const collapseTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // 更新语言的统一执行逻辑
+  const applyLanguage = useCallback(
+    async (lang?: string) => {
+      if (!lang) return;
+      setCurrentLang(lang);
+      syncLanguageFromSettings(lang);
+      try {
+        await i18n.changeLanguage(lang);
+      } catch (err) {
+        console.debug("Failed to change language:", err);
+      }
+      void queryClient.invalidateQueries({ queryKey: settingsKeys.all });
+    },
+    [i18n],
+  );
 
   // 默认软件启动时显示悬浮窗
   useEffect(() => {
@@ -52,40 +80,81 @@ export function FloatBar() {
     }
   }, [settings?.floatBarEnabled]);
 
-  // 1. 同步主窗口的语言配置（来自 SQLite settings）
+  // 组件挂载时直接主动向后端查询一次最新设置（避免冷启动时由于 React Query 缓存尚未填充导致语言滞后）
+  useEffect(() => {
+    void invoke<Settings>("get_settings")
+      .then((s) => {
+        if (s?.language) {
+          void applyLanguage(s.language);
+        }
+      })
+      .catch((err) => console.debug("Failed to query settings on float bar mount:", err));
+  }, [applyLanguage]);
+
+  // 同步主窗口与后端的语言配置（来自 SQLite settings）
   useEffect(() => {
     if (settings?.language) {
-      syncLanguageFromSettings(settings.language);
-      if (i18n.language !== settings.language) {
-        void i18n.changeLanguage(settings.language);
-      }
+      void applyLanguage(settings.language);
     }
-  }, [settings?.language, i18n]);
+  }, [settings?.language, applyLanguage]);
 
-  // 2. 监听主窗口语言切换广播事件，保持双窗语言完全一致
+  // 监听 i18n 自身语言切换回调
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    void listen<{ language: string }>("app-language-changed", (event) => {
-      const nextLang = event.payload?.language;
-      if (nextLang) {
-        syncLanguageFromSettings(nextLang);
-        void i18n.changeLanguage(nextLang);
-      }
-    }).then((fn) => {
-      unlisten = fn;
-    });
+    const handleLangChange = (lng: string) => {
+      setCurrentLang(lng);
+    };
+    i18n.on("languageChanged", handleLangChange);
     return () => {
-      unlisten?.();
+      i18n.off("languageChanged", handleLangChange);
     };
   }, [i18n]);
 
+  // 监听全通道语言切换广播事件（全局广播 + 针对本窗口的定向事件）
+  useEffect(() => {
+    let unlistenGlobal: (() => void) | undefined;
+    let unlistenWin: (() => void) | undefined;
+
+    void listen<{ language: string }>("app-language-changed", (event) => {
+      const nextLang = event.payload?.language;
+      if (nextLang) {
+        void applyLanguage(nextLang);
+      }
+    }).then((fn) => {
+      unlistenGlobal = fn;
+    });
+
+    try {
+      const win = getCurrentWindow();
+      void win
+        .listen<{ language: string }>("app-language-changed", (event) => {
+          const nextLang = event.payload?.language;
+          if (nextLang) {
+            void applyLanguage(nextLang);
+          }
+        })
+        .then((fn) => {
+          unlistenWin = fn;
+        });
+    } catch (e) {
+      console.debug("Float bar window listener registration error:", e);
+    }
+
+    return () => {
+      unlistenGlobal?.();
+      unlistenWin?.();
+    };
+  }, [applyLanguage]);
+
   // 根据当前语言确定请求次数单位（中文: 次, 英文: reqs, 日文: 回）
+  const activeLang = (currentLang || i18n.language || "zh").toLowerCase();
+  const isEn = activeLang.startsWith("en");
+  const isJa = activeLang.startsWith("ja");
+
   const reqUnit = useMemo(() => {
-    const lang = i18n.language || "zh";
-    if (lang.startsWith("en")) return "reqs";
-    if (lang.startsWith("ja")) return "回";
+    if (isEn) return "reqs";
+    if (isJa) return "回";
     return "次";
-  }, [i18n.language]);
+  }, [isEn, isJa]);
 
   // 今日统计范围
   const todayRange = useMemo<UsageRangeSelection>(
@@ -216,7 +285,7 @@ export function FloatBar() {
           data-tauri-drag-region
           onMouseEnter={handleMouseEnter}
           className="h-2.5 w-44 rounded-b-full px-2 flex items-center justify-center gap-1.5 cursor-pointer backdrop-blur-xl bg-zinc-900/90 dark:bg-zinc-900/90 light:bg-zinc-100/95 border-b border-x border-purple-500/30 shadow-[0_4px_16px_rgba(168,85,247,0.3)] hover:h-3.5 hover:w-48 hover:shadow-[0_6px_20px_rgba(168,85,247,0.5)] transition-all duration-200"
-          title={t("floatBar.hoverHint", { defaultValue: "悬停弹出用量统计条" })}
+          title={t("floatBar.hoverHint", { lng: currentLang, defaultValue: isEn ? "Hover to reveal usage statistics" : "悬停弹出用量统计条" })}
         >
           <div className="flex items-center gap-1.5 pointer-events-none">
             <span className="h-1.5 w-1.5 rounded-full bg-purple-400 animate-pulse" />
@@ -247,11 +316,11 @@ export function FloatBar() {
             type="button"
             className="flex items-center cursor-pointer shrink-0 outline-none"
             onClick={handleOpenMain}
-            title={t("floatBar.openMain", { defaultValue: "点击打开用量主面板" })}
+            title={t("floatBar.openMain", { lng: currentLang, defaultValue: isEn ? "Open main dashboard" : "点击打开用量主面板" })}
             style={NO_DRAG}
           >
             <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-purple-500/15 text-purple-400 dark:text-purple-300 light:text-purple-600 border border-purple-500/25 hover:bg-purple-500/25 transition-colors">
-              {t("floatBar.today", { defaultValue: "今日" })}
+              {t("floatBar.today", { lng: currentLang, defaultValue: isEn ? "Today" : "今日" })}
             </span>
           </button>
 
@@ -263,7 +332,7 @@ export function FloatBar() {
             {/* 今日花费 */}
             <div
               className="flex items-center gap-1 shrink-0"
-              title={t("usage.cost", { defaultValue: "今日支出" })}
+              title={t("usage.cost", { lng: currentLang, defaultValue: isEn ? "Today's Cost" : "今日支出" })}
             >
               <Coins className="h-3.5 w-3.5 text-emerald-400 dark:text-emerald-400 light:text-emerald-600 shrink-0" />
               <span className="font-mono text-sm font-bold tracking-tight text-emerald-400 dark:text-emerald-400 light:text-emerald-600">
@@ -276,7 +345,7 @@ export function FloatBar() {
             {/* Token 用量 */}
             <div
               className="flex items-center gap-1 shrink-0"
-              title={t("usage.tokens", { defaultValue: "Token 总量" })}
+              title={t("usage.tokens", { lng: currentLang, defaultValue: isEn ? "Total Tokens" : "Token 总量" })}
             >
               <Cpu className="h-3.5 w-3.5 text-indigo-400 dark:text-indigo-400 light:text-indigo-600 shrink-0" />
               <span className="font-mono text-xs font-semibold">
@@ -292,7 +361,7 @@ export function FloatBar() {
             {/* 请求次数（多语言单位支持） */}
             <div
               className="flex items-center gap-1 shrink-0"
-              title={t("usage.requests", { defaultValue: "调用请求数" })}
+              title={t("usage.requests", { lng: currentLang, defaultValue: isEn ? "Total Requests" : "调用请求数" })}
             >
               <Layers className="h-3.5 w-3.5 text-sky-400 dark:text-sky-400 light:text-sky-600 shrink-0" />
               <span className="font-mono text-xs font-medium">
@@ -338,7 +407,7 @@ export function FloatBar() {
               className={`p-1.5 rounded-full hover:bg-white/10 dark:hover:bg-white/10 light:hover:bg-black/10 text-zinc-400 hover:text-zinc-100 transition-colors shrink-0 ${
                 isSyncing ? "text-purple-400" : ""
               }`}
-              title={t("floatBar.syncNow", { defaultValue: "立即同步最新会话用量" })}
+              title={t("floatBar.syncNow", { lng: currentLang, defaultValue: isEn ? "Sync latest session usage now" : "立即同步最新会话用量" })}
             >
               <RefreshCw className={`h-3.5 w-3.5 ${isSyncing ? "animate-spin" : ""}`} />
             </button>
@@ -354,8 +423,8 @@ export function FloatBar() {
               }`}
               title={
                 isPinned
-                  ? t("floatBar.unpin", { defaultValue: "取消固定（恢复贴边隐藏）" })
-                  : t("floatBar.pin", { defaultValue: "固定常驻显示（不自动收起）" })
+                  ? t("floatBar.unpin", { lng: currentLang, defaultValue: isEn ? "Unpin float bar (auto-hide to top edge)" : "取消固定（恢复贴边隐藏）" })
+                  : t("floatBar.pin", { lng: currentLang, defaultValue: isEn ? "Pin float bar (keep expanded)" : "固定常驻显示（不自动收起）" })
               }
             >
               {isPinned ? <Pin className="h-3.5 w-3.5" /> : <PinOff className="h-3.5 w-3.5" />}
@@ -366,7 +435,7 @@ export function FloatBar() {
               type="button"
               onClick={handleOpenMain}
               className="p-1.5 rounded-full hover:bg-white/10 dark:hover:bg-white/10 light:hover:bg-black/10 text-zinc-400 hover:text-zinc-100 transition-colors shrink-0"
-              title={t("floatBar.openFullDashboard", { defaultValue: "展开用量统计主窗口" })}
+              title={t("floatBar.openFullDashboard", { lng: currentLang, defaultValue: isEn ? "Expand full usage dashboard" : "展开用量统计主窗口" })}
             >
               <Maximize2 className="h-3.5 w-3.5" />
             </button>
@@ -376,7 +445,7 @@ export function FloatBar() {
               type="button"
               onClick={handleHideBar}
               className="p-1.5 rounded-full hover:bg-red-500/20 hover:text-red-400 text-zinc-400 transition-colors shrink-0"
-              title={t("floatBar.hide", { defaultValue: "隐藏桌面悬浮顶栏（可在托盘或设置中重新开启）" })}
+              title={t("floatBar.hide", { lng: currentLang, defaultValue: isEn ? "Hide float bar (re-enable via tray or settings)" : "隐藏桌面悬浮顶栏（可在托盘或设置中重新开启）" })}
             >
               <X className="h-3.5 w-3.5" />
             </button>
