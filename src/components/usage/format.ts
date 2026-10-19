@@ -213,6 +213,10 @@ export function formatMoneyTick(value: unknown, display: MoneyDisplay): string {
 /** 输出少于这个数的请求（工具调用这类）不算速度：0.1 秒回 15 个 token 会算出离谱的数。 */
 export const SPEED_MIN_OUTPUT_TOKENS = 100;
 
+// 生成窗口短于此值时不算速度：中转站缓冲后一次性吐出、或短回复整段落在
+// 同一个网络包里，窗口只剩几毫秒，算出来的是传输突发而不是生成速度。
+export const SPEED_MIN_GENERATION_MS = 100;
+
 interface OutputTokensPerSecondInput {
   outputTokens: unknown;
   latencyMs: unknown;
@@ -221,13 +225,14 @@ interface OutputTokensPerSecondInput {
 }
 
 /**
- * 一条请求的生成时间（毫秒）= 耗时 − 首字。缺耗时或首字、或差值不大干 0 时返回 null。
+ * 一条请求的生成时间（毫秒）= 耗时 − 首字。缺耗时或首字、或差值不大于 0 时返回 null。
  * 只算路由服务记的请求：会话日志的耗时和首字都是按时间戳估的，不算精确速度
  * （会话日志另有估算，见 [getEstimatedTokensPerSecond]）；非流式请求没有首字。
  */
 export function getGenerationMs(
   log: OutputTokensPerSecondInput,
 ): number | null {
+  if (isSessionLogRequest(log)) return null;
   const latencyMs = parseFiniteNumber(log.latencyMs);
   const firstTokenMs = parseFiniteNumber(log.firstTokenMs);
   if (latencyMs == null || firstTokenMs == null) return null;
@@ -239,8 +244,13 @@ export function isProxyRequest(log: OutputTokensPerSecondInput): boolean {
   return log.dataSource == null || log.dataSource === "proxy";
 }
 
+/** 这条请求是不是从会话日志导入的（不是路由服务记的）。 */
 export function isSessionLogRequest(log: OutputTokensPerSecondInput): boolean {
-  return log.dataSource === "session";
+  return (
+    typeof log.dataSource === "string" &&
+    log.dataSource !== "" &&
+    log.dataSource !== "proxy"
+  );
 }
 
 export function isSpeedEligible(log: OutputTokensPerSecondInput): boolean {
@@ -251,7 +261,7 @@ export function isSpeedEligible(log: OutputTokensPerSecondInput): boolean {
     outputTokens != null &&
     outputTokens >= SPEED_MIN_OUTPUT_TOKENS &&
     generationMs != null &&
-    generationMs > 0
+    generationMs >= SPEED_MIN_GENERATION_MS
   );
 }
 
@@ -266,8 +276,13 @@ export function getOutputTokensPerSecond(
   return Number.isFinite(tps) && tps > 0 ? tps : null;
 }
 
-export const SPEED_ESTIMATE_MIN_OUTPUT_TOKENS = 100;
-export const SPEED_ESTIMATE_MIN_DURATION_MS = 2000;
+/** Session-log speed has no output-count threshold; any positive output with a
+ * measurable duration contributes, including short responses.
+ */
+export const SPEED_ESTIMATE_MIN_OUTPUT_TOKENS = 1;
+
+/** Session-log estimates only require a positive duration. */
+export const SPEED_ESTIMATE_MIN_DURATION_MS = 1;
 
 /**
  * 会话日志单条估算速度的前提条件。
