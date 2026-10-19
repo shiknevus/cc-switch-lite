@@ -3,6 +3,7 @@
 //! 负责 float_bar 独立窗口的生命周期、位置计算、贴边隐藏与悬停展开控制。
 //! 默认贴顶居中常驻，未激活时仅露出一小条微光胶囊，鼠标悬停时平滑伸展为单行用量条。
 
+use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, WebviewWindow};
 
 use crate::settings;
@@ -13,6 +14,9 @@ pub const FLOAT_BAR_WIDTH_EXPANDED: f64 = 890.0;
 pub const FLOAT_BAR_WIDTH_COLLAPSED: f64 = 184.0;
 pub const FLOAT_BAR_HEIGHT_EXPANDED: f64 = 60.0;
 pub const FLOAT_BAR_HEIGHT_COLLAPSED: f64 = 12.0;
+
+/// 缓存用户拖动后的中心 X 坐标，收缩与展开时围绕该中心点等距伸缩，绝不跳回屏幕正中央
+static FLOAT_BAR_CENTER_X: Mutex<Option<f64>> = Mutex::new(None);
 
 /// 将悬浮条对齐并根据展开状态调整窗口大小与屏幕位置
 pub fn align_float_bar_to_screen(window: &WebviewWindow, position_mode: &str, expanded: bool) {
@@ -33,25 +37,48 @@ pub fn align_float_bar_to_screen(window: &WebviewWindow, position_mode: &str, ex
         .flatten()
         .or_else(|| window.primary_monitor().ok().flatten());
 
-    if let Some(monitor) = monitor {
-        let scale = monitor.scale_factor();
-        let mon_pos = monitor.position();
-        let mon_size = monitor.size();
+    let Some(monitor) = monitor else { return; };
 
-        let mon_x = mon_pos.x as f64 / scale;
-        let mon_y = mon_pos.y as f64 / scale;
-        let mon_w = mon_size.width as f64 / scale;
+    let scale = monitor.scale_factor();
+    let mon_pos = monitor.position();
+    let mon_size = monitor.size();
 
-        let target_x = match position_mode {
-            "top_right" => mon_x + mon_w - width - 24.0,
-            "top_left" => mon_x + 24.0,
-            _ => mon_x + (mon_w - width) / 2.0, // top_center default
-        };
-        let target_y = mon_y;
+    let mon_x = mon_pos.x as f64 / scale;
+    let mon_y = mon_pos.y as f64 / scale;
+    let mon_w = mon_size.width as f64 / scale;
 
-        let _ = window.set_size(LogicalSize::new(width, height));
-        let _ = window.set_position(LogicalPosition::new(target_x, target_y));
-    }
+    let mut saved_center = FLOAT_BAR_CENTER_X.lock().unwrap();
+
+    // 检查窗口当前实际物理位置（用户可能刚拖拽放置）
+    let current_center = if let (Ok(pos), Ok(size)) = (window.outer_position(), window.outer_size()) {
+        let curr_x = pos.x as f64 / scale;
+        let curr_w = size.width as f64 / scale;
+        if curr_w > 50.0 && curr_x >= (mon_x - 300.0) && curr_x <= (mon_x + mon_w + 300.0) {
+            Some(curr_x + curr_w / 2.0)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let center_x = current_center
+        .or(*saved_center)
+        .unwrap_or_else(|| {
+            match position_mode {
+                "top_right" => mon_x + mon_w - width / 2.0 - 24.0,
+                "top_left" => mon_x + width / 2.0 + 24.0,
+                _ => mon_x + mon_w / 2.0, // default top_center
+            }
+        });
+
+    *saved_center = Some(center_x);
+
+    let target_x = (center_x - width / 2.0).clamp(mon_x, (mon_x + mon_w - width).max(mon_x));
+    let target_y = mon_y;
+
+    let _ = window.set_size(LogicalSize::new(width, height));
+    let _ = window.set_position(LogicalPosition::new(target_x, target_y));
 }
 
 /// 启动时初始化悬浮条窗口（默认开启显示）
@@ -64,6 +91,15 @@ pub fn setup_float_bar(app: &AppHandle) {
     let _ = window.set_decorations(false);
     let _ = window.set_always_on_top(true);
     let _ = window.set_skip_taskbar(true);
+
+    if let Some(state) = app.try_state::<AppState>() {
+        if let Ok(Some(saved)) = state.db.get_setting("float_bar_center_x") {
+            if let Ok(x) = saved.parse::<f64>() {
+                let mut lock = FLOAT_BAR_CENTER_X.lock().unwrap();
+                *lock = Some(x);
+            }
+        }
+    }
 
     let (enabled, pinned, position) = app
         .try_state::<AppState>()
@@ -105,6 +141,16 @@ pub async fn set_float_bar_expanded(
     let is_expanded = is_pinned || expanded;
     align_float_bar_to_screen(&window, &position, is_expanded);
     let _ = window.set_always_on_top(true);
+
+    // 持久化保存当前中心点 X 坐标
+    let center_x_opt = *FLOAT_BAR_CENTER_X.lock().unwrap();
+    if let (Some(center_x), Some(state)) = (center_x_opt, app.try_state::<AppState>()) {
+        let db = state.db.clone();
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            let _ = db.set_setting("float_bar_center_x", &center_x.to_string());
+        });
+    }
+
     Ok(())
 }
 
@@ -147,6 +193,11 @@ pub async fn reposition_float_bar(app: AppHandle, position: Option<String>) -> R
     let Some(window) = app.get_webview_window(FLOAT_BAR_LABEL) else {
         return Err("float_bar window not found".to_string());
     };
+
+    {
+        let mut saved = FLOAT_BAR_CENTER_X.lock().unwrap();
+        *saved = None;
+    }
 
     let pinned = app
         .try_state::<AppState>()
