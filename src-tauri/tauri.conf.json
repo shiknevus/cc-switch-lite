@@ -33,7 +33,7 @@
         "alwaysOnTop": true,
         "skipTaskbar": true,
         "resizable": false,
-        "width": 880,
+        "width": 730,
         "height": 56,
         "visible": false,
         "center": false

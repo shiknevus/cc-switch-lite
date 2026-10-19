@@ -9,7 +9,7 @@ use crate::settings;
 use crate::store::AppState;
 
 pub const FLOAT_BAR_LABEL: &str = "float_bar";
-pub const FLOAT_BAR_WIDTH: f64 = 880.0;
+pub const FLOAT_BAR_WIDTH: f64 = 730.0;
 pub const FLOAT_BAR_HEIGHT_EXPANDED: f64 = 56.0;
 pub const FLOAT_BAR_HEIGHT_COLLAPSED: f64 = 10.0;
 

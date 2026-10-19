@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -21,18 +21,6 @@ import { AppGlyph } from "@/components/shell/AppGlyph";
 import type { AppId } from "@/types";
 import type { UsageRangeSelection } from "@/types/usage";
 import { usageApi } from "@/lib/api/usage";
-
-const TOOL_SHORT_NAME: Record<string, string> = {
-  claude: "Claude",
-  "claude-desktop": "Claude",
-  codex: "Codex",
-  gemini: "Agy",
-  dsh: "DSH",
-  grokbuild: "Grok",
-  opencode: "OpenCode",
-  pi: "Pi",
-  mcode: "MiniMax",
-};
 
 const CORE_TOOL_ORDER: Record<string, number> = {
   claude: 1,
@@ -86,7 +74,8 @@ export function FloatBar() {
         const orderB = CORE_TOOL_ORDER[b.appType] ?? 99;
         if (orderA !== orderB) return orderA - orderB;
         return b.cost - a.cost;
-      });
+      })
+      .slice(0, 4);
   }, [appSummaries]);
 
   // 同步 Rust 窗口高度
@@ -187,7 +176,7 @@ export function FloatBar() {
       >
         <div
           data-tauri-drag-region
-          className="h-2.5 w-48 rounded-b-full px-2 flex items-center justify-center gap-1.5 cursor-pointer backdrop-blur-xl bg-zinc-900/90 dark:bg-zinc-900/90 light:bg-zinc-100/95 border-b border-x border-purple-500/30 shadow-[0_4px_16px_rgba(168,85,247,0.3)] hover:h-3.5 hover:w-52 hover:shadow-[0_6px_20px_rgba(168,85,247,0.5)] transition-all duration-200"
+          className="h-2.5 w-44 rounded-b-full px-2 flex items-center justify-center gap-1.5 cursor-pointer backdrop-blur-xl bg-zinc-900/90 dark:bg-zinc-900/90 light:bg-zinc-100/95 border-b border-x border-purple-500/30 shadow-[0_4px_16px_rgba(168,85,247,0.3)] hover:h-3.5 hover:w-48 hover:shadow-[0_6px_20px_rgba(168,85,247,0.5)] transition-all duration-200"
           title={t("floatBar.hoverHint", { defaultValue: "悬停弹出用量统计条" })}
         >
           <div className="flex items-center gap-1.5 pointer-events-none">
@@ -200,7 +189,7 @@ export function FloatBar() {
         </div>
       </div>
 
-      {/* 2. 悬浮展开的宽幅胶囊数据条 */}
+      {/* 2. 悬浮展开的精巧胶囊数据条 */}
       <div
         data-tauri-drag-region
         className={`absolute top-1.5 transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] ${
@@ -211,11 +200,11 @@ export function FloatBar() {
       >
         <div
           data-tauri-drag-region
-          className="h-[44px] w-[856px] rounded-full px-3.5 flex items-center justify-between gap-3 backdrop-blur-2xl bg-zinc-950/92 dark:bg-zinc-950/92 light:bg-white/95 border border-white/12 dark:border-white/12 light:border-zinc-300 shadow-[0_12px_40px_rgba(0,0,0,0.5)] text-zinc-100 dark:text-zinc-100 light:text-zinc-800"
+          className="h-[44px] w-[718px] rounded-full px-3 flex items-center justify-between gap-2.5 backdrop-blur-2xl bg-zinc-950/90 dark:bg-zinc-950/90 light:bg-white/95 border border-white/12 dark:border-white/12 light:border-zinc-300 shadow-[0_12px_40px_rgba(0,0,0,0.45)] text-zinc-100 dark:text-zinc-100 light:text-zinc-800"
         >
           {/* 左侧：Logo 与今日标识 */}
           <div
-            className="flex items-center gap-2 cursor-pointer shrink-0"
+            className="flex items-center gap-1.5 cursor-pointer shrink-0"
             onClick={handleOpenMain}
             title={t("floatBar.openMain", { defaultValue: "点击打开用量主面板" })}
             style={NO_DRAG}
@@ -231,16 +220,14 @@ export function FloatBar() {
             </span>
           </div>
 
-          <div className="h-3.5 w-px bg-white/10 dark:bg-white/10 light:bg-black/10 shrink-0" />
-
-          {/* 中间核心统计区（整行可拖拽，各项不缩水） */}
+          {/* 中间核心统计区（整行可拖拽，原汁原味极简风） */}
           <div
             data-tauri-drag-region
-            className="flex items-center gap-3.5 flex-1 justify-center min-w-0 px-1 cursor-grab"
+            className="flex items-center gap-2.5 flex-1 justify-center min-w-0 px-1 cursor-grab"
           >
             {/* 今日花费 */}
             <div
-              className="flex items-center gap-1.5 shrink-0"
+              className="flex items-center gap-1 shrink-0"
               title={t("usage.cost", { defaultValue: "今日支出" })}
             >
               <Coins className="h-3.5 w-3.5 text-emerald-400 dark:text-emerald-400 light:text-emerald-600 shrink-0" />
@@ -281,22 +268,19 @@ export function FloatBar() {
               </span>
             </div>
 
-            {/* 各工具徽章（Claude / Codex / Agy / DSH 清晰排列） */}
+            {/* 各工具徽章：图标 + 金额极简风，按 Claude / Codex / Agy / DSH 顺畅排列 */}
             {activeApps.length > 0 && (
               <>
                 <div className="h-3.5 w-px bg-white/10 dark:bg-white/10 light:bg-black/10 shrink-0" />
-                <div className="flex items-center gap-2 shrink-0">
+                <div className="flex items-center gap-1.5 shrink-0">
                   {activeApps.map((app) => (
                     <div
                       key={app.appType}
-                      className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-white/5 dark:bg-white/5 light:bg-black/5 border border-white/10 dark:border-white/10 light:border-black/10 text-[11px] font-mono shrink-0"
-                      title={`${TOOL_SHORT_NAME[app.appType] || app.appType.toUpperCase()}: ${money(app.cost, 2)} · ${formatTokensCompact(app.tokens)} tokens · ${app.requests} 次`}
+                      className="flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-white/5 dark:bg-white/5 light:bg-black/5 border border-white/8 dark:border-white/8 light:border-black/5 text-[10px] font-mono shrink-0"
+                      title={`${app.appType.toUpperCase()}: ${money(app.cost, 2)} · ${formatTokensCompact(app.tokens)} tokens · ${app.requests} 次`}
                     >
                       <AppGlyph app={app.appType as AppId} size={13} />
-                      <span className="text-[10px] font-semibold text-zinc-400 dark:text-zinc-400 light:text-zinc-500">
-                        {TOOL_SHORT_NAME[app.appType] || app.appType}
-                      </span>
-                      <span className="font-semibold text-zinc-200 dark:text-zinc-200 light:text-zinc-800">
+                      <span className="font-semibold text-zinc-300 dark:text-zinc-300 light:text-zinc-700">
                         {money(app.cost, 2)}
                       </span>
                     </div>
@@ -306,10 +290,11 @@ export function FloatBar() {
             )}
           </div>
 
+          {/* 独立分割线：确保工具徽章和右侧按钮绝对隔离 */}
           <div className="h-3.5 w-px bg-white/10 dark:bg-white/10 light:bg-black/10 shrink-0" />
 
-          {/* 右侧：快捷操作按钮（不重叠、无拖拽拦截） */}
-          <div className="flex items-center gap-1 shrink-0" style={NO_DRAG}>
+          {/* 右侧：快捷操作按钮（独立成组，带 no-drag，绝无重叠） */}
+          <div className="flex items-center gap-0.5 shrink-0" style={NO_DRAG}>
             {/* 立即同步 */}
             <button
               type="button"
