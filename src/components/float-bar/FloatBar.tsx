@@ -59,16 +59,76 @@ export function FloatBar() {
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const collapseTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // 今日统计范围
-  const todayRange = useMemo<UsageRangeSelection>(
-    () => ({ preset: "today" }),
-    [],
-  );
+  // 统计范围模式：全部(all) / 今日(today) / 本次(session)
+  const [rangeMode, setRangeMode] = useState<"all" | "today" | "session">(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const stored = window.localStorage.getItem("cc_float_range_mode");
+        if (stored === "all" || stored === "today" || stored === "session") {
+          return stored;
+        }
+      } catch {}
+    }
+    return "today";
+  });
 
-  const { data: summary } = useUsageSummary(todayRange);
-  const { data: appSummaries } = useUsageSummaryByApp(todayRange);
+  // “本次”会话计数的起始时间（秒级 UNIX 时间戳），从选择的那一刻起算
+  const [sessionStartTime, setSessionStartTime] = useState<number>(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const stored = window.sessionStorage.getItem("cc_float_session_start");
+        if (stored) {
+          const parsed = parseInt(stored, 10);
+          if (!isNaN(parsed) && parsed > 0) return parsed;
+        }
+      } catch {}
+    }
+    return Math.floor(Date.now() / 1000);
+  });
 
-  // 计算今日数值
+  // 格式化本次起始时刻（如 14:25:30）
+  const sessionStartTimeFormatted = useMemo(() => {
+    if (!sessionStartTime) return "";
+    const d = new Date(sessionStartTime * 1000);
+    const pad = (n: number) => n.toString().padStart(2, "0");
+    return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  }, [sessionStartTime]);
+
+  // 构造响应式统计范围
+  const activeRange = useMemo<UsageRangeSelection>(() => {
+    if (rangeMode === "all") {
+      return { preset: "all" };
+    }
+    if (rangeMode === "session") {
+      return {
+        preset: "custom",
+        customStartDate: sessionStartTime,
+        liveEndTime: true,
+      };
+    }
+    return { preset: "today" };
+  }, [rangeMode, sessionStartTime]);
+
+  // 选择统计范围模式（如果再次点击本次，重置起始时刻为当前并从 0 计数）
+  const handleSelectMode = (mode: "all" | "today" | "session", e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    if (mode === "session") {
+      const nowSec = Math.floor(Date.now() / 1000);
+      setSessionStartTime(nowSec);
+      try {
+        window.sessionStorage.setItem("cc_float_session_start", String(nowSec));
+      } catch {}
+    }
+    setRangeMode(mode);
+    try {
+      window.localStorage.setItem("cc_float_range_mode", mode);
+    } catch {}
+  };
+
+  const { data: summary } = useUsageSummary(activeRange);
+  const { data: appSummaries } = useUsageSummaryByApp(activeRange);
+
+  // 计算当前范围内的数值
   const totalCostNum = summary ? parseFloat(summary.totalCost) || 0 : 0;
   const totalTokensNum = summary?.realTotalTokens ?? 0;
   const totalReqsNum = summary?.totalRequests ?? 0;
@@ -109,8 +169,9 @@ export function FloatBar() {
     if (!el) return;
 
     const measure = () => {
-      // scrollWidth 为真实内容完整宽度
-      const w = el.scrollWidth || el.offsetWidth;
+      // 真实无挤压的完整物理排版宽度
+      const rectWidth = el.getBoundingClientRect().width;
+      const w = Math.ceil(Math.max(rectWidth, el.offsetWidth, el.scrollWidth));
       if (w > 100) {
         setMeasuredCapsuleWidth((prev) => (Math.abs(prev - w) >= 2 ? w : prev));
       }
@@ -129,42 +190,43 @@ export function FloatBar() {
     return () => {
       ro?.disconnect();
     };
-  }, [activeApps, summary, currentLang, totalCostNum, totalTokensNum, totalReqsNum]);
+  }, [activeApps, summary, currentLang, totalCostNum, totalTokensNum, totalReqsNum, rangeMode]);
 
-  // 基于实际内容的特征预估宽度（首帧或 DOM 尚未完成测量时的瞬间兜底）
+  // 基于实际内容的特征预估宽度（首帧或 DOM 尚未完成测量时的充裕瞬间兜底，宁宽勿窄，防止挤压）
   const contentEstimatedWidth = useMemo(() => {
-    // 1. 左侧“今日”标签 + 间距 + 分割线
-    const todayLabelWidth = isEn ? 52.0 : isJa ? 46.0 : 42.0;
-    const todaySection = todayLabelWidth + 8.0 + 1.0 + 8.0;
+    // 1. 左侧三态分段按钮组(全部/今日/本次，约110~130px) + 间距(8px) + 分割线(1px) + 间距(8px)
+    const selectorWidth = isEn ? 130.0 : isJa ? 120.0 : 112.0;
+    const todaySection = selectorWidth + 17.0;
 
-    // 2. 今日花费：图标(14) + gap(4) + 字符宽度
+    // 2. 今日花费：图标(14) + gap(4) + text-xs 加粗字符宽度(每个约8px) + gap
     const costStr = money(totalCostNum, 2);
-    const costSection = 18.0 + costStr.length * 7.5;
+    const costSection = 18.0 + costStr.length * 8.0;
 
-    // 3. Token 用量：分割线(1) + gap(8) + 图标(14) + gap(4) + 字符宽度 + 'tk'(16)
+    // 3. Token 用量：分割线与间距(17) + 图标(14) + gap(4) + 字符宽度 + 'tk'(18)
     const tokenStr = formatTokensCompact(totalTokensNum);
-    const tokenSection = 9.0 + 18.0 + tokenStr.length * 7.5 + 16.0;
+    const tokenSection = 17.0 + 18.0 + tokenStr.length * 8.0 + 18.0;
 
-    // 4. 请求次数：分割线(1) + gap(8) + 图标(14) + gap(4) + 字符宽度 + 单位
+    // 4. 请求次数：分割线与间距(17) + 图标(14) + gap(4) + 字符宽度 + 单位
     const reqStr = String(totalReqsNum);
-    const unitWidth = isEn ? 28.0 : 16.0;
-    const reqSection = 9.0 + 18.0 + reqStr.length * 7.5 + unitWidth;
+    const unitWidth = isEn ? 32.0 : 18.0;
+    const reqSection = 17.0 + 18.0 + reqStr.length * 8.0 + unitWidth;
 
     // 5. 各工具徽章宽度
     let appsSection = 0;
     if (activeApps.length > 0) {
-      appsSection += 9.0;
+      appsSection += 17.0; // 分割线与间距
       for (const app of activeApps) {
         const appCostStr = money(app.cost, 2);
-        appsSection += 12.0 + 4.0 + appCostStr.length * 7.5 + 14.0 + 4.0;
+        // 图标(12) + gap(4) + text-xs 金额 + padding(14) + border(2) + 间距(6)
+        appsSection += 12.0 + 4.0 + appCostStr.length * 8.0 + 16.0 + 6.0;
       }
     }
 
-    // 6. 右侧 4 个操作按钮组：分割线(1) + gap(8) + 4 个按钮(各约 22px) + gap(2px*3)
-    const actionsSection = 9.0 + (4 * 22.0 + 6.0);
+    // 6. 右侧 4 个操作按钮组：分割线与间距(17) + 4 个按钮(各约 24px) + gap(4px*3) + 呼吸留白(6)
+    const actionsSection = 17.0 + (4 * 24.0 + 12.0) + 6.0;
 
-    // 7. 胶囊内边距 px-2.5 (20px)
-    const capsulePadding = 20.0;
+    // 7. 胶囊两端充裕内边距 ps-3 (12px) + pe-3.5 (14px) + 边框 = 28px
+    const capsulePadding = 28.0;
 
     return Math.ceil(
       todaySection +
@@ -177,12 +239,25 @@ export function FloatBar() {
     );
   }, [isEn, isJa, totalCostNum, totalTokensNum, totalReqsNum, activeApps, money]);
 
-  // 最终动态展开窗口宽度（内容宽度 + 8px 安全呼吸边距，左右各留 4px）
+  // 最终动态展开窗口宽度（胶囊宽度 + 20px 安全呼吸边距，左右各留 10px 透明缓冲区，彻底杜绝窗口裁剪边缘）
   const dynamicExpandedWidth = useMemo(() => {
     const rawWidth =
       measuredCapsuleWidth > 150 ? measuredCapsuleWidth : contentEstimatedWidth;
-    return Math.max(360.0, Math.ceil(rawWidth + 8.0));
+    return Math.max(380.0, Math.ceil(rawWidth + 20.0));
   }, [measuredCapsuleWidth, contentEstimatedWidth]);
+
+  // 动态花费金额标题提示
+  const costTitle = useMemo(() => {
+    if (rangeMode === "session") {
+      return isEn
+        ? `Session Cost (since ${sessionStartTimeFormatted})`
+        : `本次支出（自 ${sessionStartTimeFormatted} 起）`;
+    }
+    if (rangeMode === "all") {
+      return isEn ? "All Time Cost" : "全部历史支出";
+    }
+    return isEn ? "Today's Cost" : "今日支出";
+  }, [rangeMode, sessionStartTimeFormatted, isEn]);
 
   // 同步 Rust 窗口大小与位置（带自适应紧凑宽度）
   const syncWindowExpanded = useCallback(
@@ -377,10 +452,11 @@ export function FloatBar() {
       className="w-full h-full flex flex-col items-center justify-start select-none relative overflow-visible font-sans"
       onMouseLeave={handleMouseLeave}
     >
-      {/* 1. 贴顶微小感应指示条（隐藏状态下仅在这块范围内才悬浮展开） */}
+      {/* 1. 贴顶微小感应指示条（隐藏状态下仅在这块范围内才悬浮展开，支持双击直接打开主面板） */}
       <div
         data-tauri-drag-region
         onMouseEnter={handleMouseEnter}
+        onDoubleClick={handleOpenMain}
         className={`absolute top-0 flex items-center justify-center transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] ${
           expanded
             ? "opacity-0 pointer-events-none -translate-y-2"
@@ -390,10 +466,13 @@ export function FloatBar() {
         <div
           data-tauri-drag-region
           onMouseEnter={handleMouseEnter}
+          onDoubleClick={handleOpenMain}
           className="h-2.5 w-44 rounded-b-full px-2 flex items-center justify-center gap-1.5 cursor-pointer bg-zinc-900/95 dark:bg-zinc-900/95 light:bg-zinc-100 border-b border-x border-purple-500/30 shadow-none drop-shadow-none hover:h-3.5 hover:w-48 transition-all duration-200"
           title={t("floatBar.hoverHint", {
             lng: currentLang,
-            defaultValue: isEn ? "Hover to reveal usage statistics" : "悬停弹出用量统计条",
+            defaultValue: isEn
+              ? "Hover to reveal, double-click to open main dashboard"
+              : "悬停弹出用量条，双击打开主控制面板",
           })}
         >
           <div className="flex items-center gap-1.5 pointer-events-none">
@@ -406,10 +485,11 @@ export function FloatBar() {
         </div>
       </div>
 
-      {/* 2. 悬浮展开的精巧胶囊数据条（宽度紧凑贴合内容，绝无多余大空白，完全无阴影） */}
+      {/* 2. 悬浮展开的精巧胶囊数据条（支持双击打开主窗口，宽度紧凑贴合内容，完全无阴影） */}
       <div
         data-tauri-drag-region
         onMouseEnter={handleMouseEnter}
+        onDoubleClick={handleOpenMain}
         className={`absolute top-1 flex justify-center transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] ${
           expanded
             ? "opacity-100 pointer-events-auto translate-y-0 scale-100"
@@ -419,42 +499,99 @@ export function FloatBar() {
         <div
           ref={capsuleRef}
           data-tauri-drag-region
-          style={{ width: `${dynamicExpandedWidth - 8}px` }}
-          className="h-[40px] rounded-full px-2.5 flex items-center justify-between gap-2 bg-zinc-950/95 dark:bg-zinc-950/95 light:bg-white border border-white/12 dark:border-white/12 light:border-zinc-300 shadow-none drop-shadow-none text-zinc-100 dark:text-zinc-100 light:text-zinc-800 transition-[width] duration-200"
+          onDoubleClick={handleOpenMain}
+          className="h-[40px] w-max rounded-full ps-3 pe-3.5 flex items-center gap-2 bg-zinc-950/95 dark:bg-zinc-950/95 light:bg-white border border-white/12 dark:border-white/12 light:border-zinc-300 shadow-none drop-shadow-none text-zinc-100 dark:text-zinc-100 light:text-zinc-800"
+          title={t("floatBar.capsuleHint", {
+            lng: currentLang,
+            defaultValue: isEn ? "Double-click to open main dashboard" : "双击打开主控制面板",
+          })}
         >
-          {/* 左侧：仅「今日」标识，去掉左侧小图标，点击打开主面板 */}
-          <button
-            type="button"
-            className="flex items-center cursor-pointer shrink-0 outline-none"
-            onClick={handleOpenMain}
-            title={t("floatBar.openMain", {
-              lng: currentLang,
-              defaultValue: isEn ? "Open main dashboard" : "点击打开用量主面板",
-            })}
+          {/* 左侧：范围选择按钮组（全部 / 今日 / 本次） */}
+          <div
+            className="flex items-center p-0.5 rounded-full bg-white/5 dark:bg-white/5 light:bg-black/5 border border-white/8 dark:border-white/8 light:border-black/5 shrink-0"
             style={NO_DRAG}
           >
-            <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-purple-500/15 text-purple-400 dark:text-purple-300 light:text-purple-600 border border-purple-500/25 hover:bg-purple-500/25 transition-colors">
-              {t("floatBar.today", {
+            {/* 全部 */}
+            <button
+              type="button"
+              onClick={(e) => handleSelectMode("all", e)}
+              className={`px-2 py-0.5 rounded-full text-[11px] font-medium transition-all shrink-0 outline-none ${
+                rangeMode === "all"
+                  ? "bg-sky-500/25 text-sky-300 dark:text-sky-300 light:text-sky-600 font-semibold shadow-sm"
+                  : "text-zinc-400 hover:text-zinc-200 light:text-zinc-500 light:hover:text-zinc-800 hover:bg-white/5"
+              }`}
+              title={t("floatBar.rangeAllHint", {
                 lng: currentLang,
-                defaultValue: isEn ? "Today" : "今日",
+                defaultValue: isEn ? "All time usage statistics" : "全部历史累计总用量",
               })}
-            </span>
-          </button>
+            >
+              {t("common.all", { lng: currentLang, defaultValue: isEn ? "All" : isJa ? "全期間" : "全部" })}
+            </button>
+
+            {/* 今日 */}
+            <button
+              type="button"
+              onClick={(e) => handleSelectMode("today", e)}
+              className={`px-2 py-0.5 rounded-full text-[11px] font-medium transition-all shrink-0 outline-none ${
+                rangeMode === "today"
+                  ? "bg-purple-500/25 text-purple-300 dark:text-purple-300 light:text-purple-600 font-semibold shadow-sm"
+                  : "text-zinc-400 hover:text-zinc-200 light:text-zinc-500 light:hover:text-zinc-800 hover:bg-white/5"
+              }`}
+              title={t("floatBar.rangeTodayHint", {
+                lng: currentLang,
+                defaultValue: isEn ? "Today's usage statistics" : "今日用量统计（当天 00:00 至今）",
+              })}
+            >
+              {t("floatBar.today", { lng: currentLang, defaultValue: isEn ? "Today" : "今日" })}
+            </button>
+
+            {/* 本次 */}
+            <button
+              type="button"
+              onClick={(e) => handleSelectMode("session", e)}
+              className={`px-2 py-0.5 rounded-full text-[11px] font-medium transition-all shrink-0 outline-none flex items-center gap-1 ${
+                rangeMode === "session"
+                  ? "bg-amber-500/25 text-amber-300 dark:text-amber-300 light:text-amber-600 font-semibold shadow-sm"
+                  : "text-zinc-400 hover:text-zinc-200 light:text-zinc-500 light:hover:text-zinc-800 hover:bg-white/5"
+              }`}
+              title={
+                rangeMode === "session"
+                  ? t("floatBar.rangeSessionActiveHint", {
+                      lng: currentLang,
+                      time: sessionStartTimeFormatted,
+                      defaultValue: isEn
+                        ? `Since ${sessionStartTimeFormatted}. Click again to reset starting time`
+                        : `自 ${sessionStartTimeFormatted} 起开始实时计数，再次点击可重置起点`,
+                    })
+                  : t("floatBar.rangeSessionHint", {
+                      lng: currentLang,
+                      defaultValue: isEn
+                        ? "Start counting usage from current moment"
+                        : "从选择起开始实时计数本次用量",
+                    })
+              }
+            >
+              {rangeMode === "session" && (
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              )}
+              <span>
+                {t("floatBar.session", { lng: currentLang, defaultValue: isEn ? "Session" : isJa ? "今回" : "本次" })}
+              </span>
+            </button>
+          </div>
 
           <div className="h-3 w-px bg-white/10 dark:bg-white/10 light:bg-black/10 shrink-0" />
 
-          {/* 中间核心统计区（紧凑排列，无冗余空隙） */}
+          {/* 中间核心统计区（紧凑排列，无冗余空隙，支持双击弹出主窗口） */}
           <div
             data-tauri-drag-region
+            onDoubleClick={handleOpenMain}
             className="flex items-center gap-2 shrink-0 px-0.5 cursor-grab"
           >
-            {/* 今日花费 */}
+            {/* 花费金额 */}
             <div
               className="flex items-center gap-1 shrink-0"
-              title={t("usage.cost", {
-                lng: currentLang,
-                defaultValue: isEn ? "Today's Cost" : "今日支出",
-              })}
+              title={costTitle}
             >
               <Coins className="h-3.5 w-3.5 text-emerald-400 dark:text-emerald-400 light:text-emerald-600 shrink-0" />
               <span className="font-mono text-xs font-bold tracking-tight text-emerald-400 dark:text-emerald-400 light:text-emerald-600">
@@ -525,14 +662,14 @@ export function FloatBar() {
           {/* 独立分割线：确保工具徽章和右侧按钮绝对隔离 */}
           <div className="h-3 w-px bg-white/10 dark:bg-white/10 light:bg-black/10 shrink-0" />
 
-          {/* 右侧：快捷操作按钮（紧凑精炼，绝对防挤压 shrink-0，带 no-drag，绝无重叠） */}
-          <div className="flex items-center gap-0.5 shrink-0" style={NO_DRAG}>
+          {/* 右侧：快捷操作按钮（独立定宽定高 h-6 w-6，防挤压 shrink-0，带 no-drag，绝无重叠或遮挡） */}
+          <div className="flex items-center gap-1 shrink-0 pe-0.5" style={NO_DRAG}>
             {/* 立即同步 */}
             <button
               type="button"
               onClick={handleSyncNow}
               disabled={isSyncing}
-              className={`p-1 rounded-full hover:bg-white/10 dark:hover:bg-white/10 light:hover:bg-black/10 text-zinc-400 hover:text-zinc-100 transition-colors shrink-0 ${
+              className={`h-6 w-6 flex items-center justify-center rounded-full hover:bg-white/10 dark:hover:bg-white/10 light:hover:bg-black/10 text-zinc-400 hover:text-zinc-100 transition-colors shrink-0 ${
                 isSyncing ? "text-purple-400" : ""
               }`}
               title={t("floatBar.syncNow", {
@@ -547,7 +684,7 @@ export function FloatBar() {
             <button
               type="button"
               onClick={togglePin}
-              className={`p-1 rounded-full hover:bg-white/10 dark:hover:bg-white/10 light:hover:bg-black/10 transition-colors shrink-0 ${
+              className={`h-6 w-6 flex items-center justify-center rounded-full hover:bg-white/10 dark:hover:bg-white/10 light:hover:bg-black/10 transition-colors shrink-0 ${
                 pinned
                   ? "text-purple-400 bg-purple-500/20"
                   : "text-zinc-400 hover:text-zinc-100"
@@ -571,7 +708,7 @@ export function FloatBar() {
             <button
               type="button"
               onClick={handleOpenMain}
-              className="p-1 rounded-full hover:bg-white/10 dark:hover:bg-white/10 light:hover:bg-black/10 text-zinc-400 hover:text-zinc-100 transition-colors shrink-0"
+              className="h-6 w-6 flex items-center justify-center rounded-full hover:bg-white/10 dark:hover:bg-white/10 light:hover:bg-black/10 text-zinc-400 hover:text-zinc-100 transition-colors shrink-0"
               title={t("floatBar.openFullDashboard", {
                 lng: currentLang,
                 defaultValue: isEn ? "Expand full usage dashboard" : "展开用量统计主窗口",
@@ -584,7 +721,7 @@ export function FloatBar() {
             <button
               type="button"
               onClick={handleHideBar}
-              className="p-1 rounded-full hover:bg-red-500/20 hover:text-red-400 text-zinc-400 transition-colors shrink-0"
+              className="h-6 w-6 flex items-center justify-center rounded-full hover:bg-red-500/20 hover:text-red-400 text-zinc-400 transition-colors shrink-0"
               title={t("floatBar.hide", {
                 lng: currentLang,
                 defaultValue: isEn ? "Hide float bar (re-enable via tray or settings)" : "隐藏桌面悬浮顶栏（可在托盘或设置中重新开启）",

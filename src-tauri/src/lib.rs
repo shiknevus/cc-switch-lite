@@ -55,18 +55,20 @@ async fn prune_usage_logs(db: Arc<Database>) {
     .await;
 }
 
-fn reconcile_auto_launch(settings: &settings::AppSettings) {
-    if !settings.launch_on_startup {
-        return;
-    }
-    match auto_launch::is_auto_launch_enabled() {
-        Ok(true) => {
-            if let Err(e) = auto_launch::enable_auto_launch(settings.silent_startup) {
-                log::warn!("刷新开机自启项失败: {e}");
+pub fn reconcile_auto_launch(settings: &settings::AppSettings) {
+    if settings.launch_on_startup {
+        if let Err(e) = auto_launch::enable_auto_launch(settings.silent_startup) {
+            log::warn!("开机自启同步登记失败: {e}");
+        } else {
+            log::info!("开机自启已自动对齐同步（silent={}）", settings.silent_startup);
+        }
+    } else {
+        // 如果数据库设置未开启开机自启，但系统里存在旧的启动项，则清理掉
+        if let Ok(true) = auto_launch::is_auto_launch_enabled() {
+            if let Err(e) = auto_launch::disable_auto_launch() {
+                log::warn!("开机自启清理失败: {e}");
             }
         }
-        Ok(false) => log::info!("设置要求开机自启，但系统里没有该启动项，交由用户在设置里重新开启"),
-        Err(e) => log::warn!("读取开机自启状态失败: {e}"),
     }
 }
 

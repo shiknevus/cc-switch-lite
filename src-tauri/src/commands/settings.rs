@@ -5,10 +5,18 @@ use tauri::{AppHandle, Emitter, State};
 #[tauri::command]
 pub async fn get_settings(state: State<'_, AppState>) -> Result<AppSettings, String> {
     let db = state.db.clone();
-    tauri::async_runtime::spawn_blocking(move || get_settings_from_db(&db))
-        .await
-        .map_err(|error| format!("读取设置任务失败: {error}"))?
-        .map_err(|error| error.to_string())
+    let settings = tauri::async_runtime::spawn_blocking(move || {
+        let s = get_settings_from_db(&db);
+        if let Ok(ref current) = s {
+            crate::reconcile_auto_launch(current);
+        }
+        s
+    })
+    .await
+    .map_err(|error| format!("读取设置任务失败: {error}"))?
+    .map_err(|error| error.to_string())?;
+
+    Ok(settings)
 }
 
 #[tauri::command]
@@ -26,10 +34,14 @@ pub async fn save_settings(
     .unwrap_or_default();
 
     let settings_clone = settings.clone();
-    tauri::async_runtime::spawn_blocking(move || save_settings_to_db(&db, &settings_clone))
-        .await
-        .map_err(|error| format!("保存设置任务失败: {error}"))?
-        .map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let res = save_settings_to_db(&db, &settings_clone);
+        crate::reconcile_auto_launch(&settings_clone);
+        res
+    })
+    .await
+    .map_err(|error| format!("保存设置任务失败: {error}"))?
+    .map_err(|e| e.to_string())?;
 
     if old_lang != settings.language {
         let lang_payload = serde_json::json!({ "language": settings.language });

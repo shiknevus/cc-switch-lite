@@ -6,6 +6,13 @@
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, WebviewWindow};
 
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::UI::WindowsAndMessaging::{WM_LBUTTONDBLCLK, WM_NCLBUTTONDBLCLK};
+
 use crate::settings;
 use crate::store::AppState;
 
@@ -17,6 +24,32 @@ pub const FLOAT_BAR_HEIGHT_COLLAPSED: f64 = 12.0;
 
 /// 缓存用户拖动后的中心 X 坐标，收缩与展开时围绕该中心点等距伸缩，绝不跳回屏幕正中央
 static FLOAT_BAR_CENTER_X: Mutex<Option<f64>> = Mutex::new(None);
+
+#[cfg(target_os = "windows")]
+static APP_HANDLE: Mutex<Option<AppHandle>> = Mutex::new(None);
+
+#[cfg(target_os = "windows")]
+const FLOAT_BAR_SUBCLASS_ID: usize = 0xFB01;
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn float_bar_subclass_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _u_id_subclass: usize,
+    _dw_ref_data: usize,
+) -> LRESULT {
+    if msg == WM_NCLBUTTONDBLCLK || msg == WM_LBUTTONDBLCLK {
+        if let Ok(guard) = APP_HANDLE.lock() {
+            if let Some(app) = guard.as_ref() {
+                crate::tray::show_main_window(app);
+            }
+        }
+        return 0;
+    }
+    DefSubclassProc(hwnd, msg, wparam, lparam)
+}
 
 /// 将悬浮条对齐并根据展开状态调整窗口大小与屏幕位置
 pub fn align_float_bar_to_screen(
@@ -98,6 +131,17 @@ pub fn setup_float_bar(app: &AppHandle) {
     let _ = window.set_shadow(false);
     let _ = window.set_always_on_top(true);
     let _ = window.set_skip_taskbar(true);
+
+    #[cfg(target_os = "windows")]
+    {
+        *APP_HANDLE.lock().unwrap() = Some(app.clone());
+        if let Ok(raw_hwnd) = window.hwnd() {
+            let hwnd: HWND = raw_hwnd.0 as _;
+            unsafe {
+                SetWindowSubclass(hwnd, Some(float_bar_subclass_proc), FLOAT_BAR_SUBCLASS_ID, 0);
+            }
+        }
+    }
 
     if let Some(state) = app.try_state::<AppState>() {
         if let Ok(Some(saved)) = state.db.get_setting("float_bar_center_x") {
